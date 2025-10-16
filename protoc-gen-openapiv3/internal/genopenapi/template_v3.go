@@ -10,6 +10,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
+	"google.golang.org/genproto/googleapis/api/visibility"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -134,12 +135,24 @@ func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 }
 
 func resolveNames(param param) map[string]string {
-	typeNames := []string{}
+	typeNamesSet := map[string]struct{}{}
 	for _, message := range param.Messages {
-		typeNames = append(typeNames, message.FQMN())
+		typeNamesSet[message.FQMN()] = struct{}{}
 	}
 	for _, enum := range param.Enums {
-		typeNames = append(typeNames, enum.FQEN())
+		typeNamesSet[enum.FQEN()] = struct{}{}
+	}
+	statusType, err := param.reg.LookupMsg("google.rpc", "Status")
+	if err == nil && statusType != nil {
+		typeNamesSet[statusType.FQMN()] = struct{}{}
+	}
+	statusCodeType, err := param.reg.LookupEnum("google.rpc", "Code")
+	if err == nil && statusCodeType != nil {
+		typeNamesSet[statusCodeType.FQEN()] = struct{}{}
+	}
+	typeNames := []string{}
+	for typeName := range typeNamesSet {
+		typeNames = append(typeNames, typeName)
 	}
 	if param.reg.GetOpenAPINamingStrategy() == "fqn" {
 		return resolveNamesFQN(typeNames)
@@ -151,7 +164,13 @@ func resolveNames(param param) map[string]string {
 func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV3Paths, error) {
 	paths := OpenAPIV3Paths{}
 	for _, svc := range param.Services {
+		if !isVisible(getServiceVisibilityOption(svc), param.reg) {
+			continue
+		}
 		for _, m := range svc.Methods {
+			if !isVisible(getMethodVisibilityOption(m), param.reg) {
+				continue
+			}
 			var mainBinding *descriptor.Binding
 			var bindings []*descriptor.Binding
 			for _, b := range m.Bindings {
@@ -368,6 +387,9 @@ func buildResponseBody(binding *descriptor.Binding, registry *descriptor.Registr
 		}
 	} else {
 		schema := buildPropertySchemaWithReferencesFromField(targetField, registry, resolvedNames)
+		if schema == nil {
+			responseContent["application/json"] = OpenAPIV3MediaType{}
+		}
 		responseContent["application/json"] = OpenAPIV3MediaType{
 			Schema: schema,
 		}
@@ -384,16 +406,21 @@ func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Regis
 	for _, param := range binding.PathParams {
 		paramName := param.FieldPath.String()
 		field := param.Target
-		fieldOpenApiV3Schema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
-		parameterRef := OpenAPIV3ParameterRef{
-			OpenAPIV3Parameter: &OpenAPIV3Parameter{
-				Name:     paramName,
-				In:       "path",
-				Required: true,
-				Schema:   fieldOpenApiV3Schema,
-			},
+		if !isVisible(getFieldVisibilityOption(field), registry) {
+			continue
 		}
-		parameterRefs = append(parameterRefs, parameterRef)
+		fieldOpenApiV3Schema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
+		if fieldOpenApiV3Schema != nil {
+			parameterRef := OpenAPIV3ParameterRef{
+				OpenAPIV3Parameter: &OpenAPIV3Parameter{
+					Name:     paramName,
+					In:       "path",
+					Required: true,
+					Schema:   fieldOpenApiV3Schema,
+				},
+			}
+			parameterRefs = append(parameterRefs, parameterRef)
+		}
 	}
 	return parameterRefs
 }
@@ -407,6 +434,9 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 	if err != nil {
 	}
 	for _, field := range message.Fields {
+		if !isVisible(getFieldVisibilityOption(field), registry) {
+			continue
+		}
 		shouldSkipField := false
 		fieldPathsAlreadyIncludedInBodyOrPathParameters := [][]string{}
 		for _, pathParameter := range binding.PathParams {
@@ -442,6 +472,9 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 		}
 
 		queryParameterSchema := buildPropertySchemaFromField(field, schemaMap, registry)
+		if queryParameterSchema == nil {
+			continue
+		}
 		// Follow the path of the field to remove, and remove it from the body schema
 		if len(queryParameterSchema.Properties) > 0 {
 			properties := &queryParameterSchema.Properties
@@ -493,7 +526,9 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 	for _, bodyFields := range bodyRepresentation.fieldCombinations {
 		bodyProperties := make(map[string]*OpenAPIV3SchemaRef)
 		for _, bodyField := range bodyFields {
-
+			if !isVisible(getFieldVisibilityOption(bodyField.Field), registry) {
+				continue
+			}
 			fieldsToRemoveFromBody := []protoField{}
 			for _, parameterField := range parameterFields {
 				if bodyField.isParentOf(parameterField) {
@@ -544,7 +579,10 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 					}
 				}
 			} else {
-				bodyProperties[*bodyField.Field.Name] = buildPropertySchemaWithReferencesFromField(bodyField.Field, registry, resolvedNames)
+				propertySchema := buildPropertySchemaWithReferencesFromField(bodyField.Field, registry, resolvedNames)
+				if propertySchema != nil {
+					bodyProperties[*bodyField.Field.Name] = propertySchema
+				}
 			}
 		}
 		if len(bodyProperties) > 0 {
@@ -810,6 +848,9 @@ func buildEnumSchemas(param param, resolvedNames map[string]string) map[string]*
 			extensions = *openApiV3EnumExtensions
 		}
 		for _, enumValue := range enum.Value {
+			if !isVisible(getEnumValueVisibilityOption(enumValue), param.reg) {
+				continue
+			}
 			enumVariants = append(enumVariants, *enumValue.Name)
 		}
 		enumSchema := &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
@@ -902,11 +943,17 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 		properties := make(map[string]*OpenAPIV3SchemaRef)
 
 		for _, field := range fieldsNotPartOfOneofGroup {
-			properties[*field.Name] = buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
+			propertySchema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
+			if propertySchema != nil {
+				properties[*field.Name] = propertySchema
+			}
 		}
 
 		for _, field := range combination {
-			properties[*field.Name] = buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
+			propertySchema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
+			if propertySchema != nil {
+				properties[*field.Name] = propertySchema
+			}
 		}
 
 		schema := &OpenAPIV3Schema{
@@ -982,11 +1029,17 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 	for _, combination := range combinationsOfFieldsPartOfOneofGroups {
 		properties := make(map[string]*OpenAPIV3SchemaRef)
 		for _, field := range fieldsNotPartOfOneofGroup {
-			properties[*field.Name] = buildPropertySchemaFromField(field, schemaMap, registry)
+			propertySchema := buildPropertySchemaFromField(field, schemaMap, registry)
+			if propertySchema != nil {
+				properties[*field.Name] = propertySchema
+			}
 		}
 
 		for _, field := range combination {
-			properties[*field.Name] = buildPropertySchemaFromField(field, schemaMap, registry)
+			propertySchema := buildPropertySchemaFromField(field, schemaMap, registry)
+			if propertySchema != nil {
+				properties[*field.Name] = propertySchema
+			}
 		}
 
 		oneOfSchemas = append(oneOfSchemas, &OpenAPIV3SchemaRef{
@@ -1057,7 +1110,11 @@ func buildSchemaFromFieldsWithReferences(
 ) *OpenAPIV3Schema {
 	properties := make(map[string]*OpenAPIV3SchemaRef)
 	for _, field := range fields {
-		properties[*field.Name] = buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
+		propertySchema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
+		if propertySchema == nil {
+			continue
+		}
+		properties[*field.Name] = propertySchema
 	}
 	return &OpenAPIV3Schema{
 		Type:                "object",
@@ -1082,7 +1139,11 @@ func buildSchemaFromFields(
 ) *OpenAPIV3Schema {
 	properties := make(map[string]*OpenAPIV3SchemaRef)
 	for _, field := range fields {
-		properties[*field.Name] = buildPropertySchemaFromField(field, schemaMap, registry)
+		propertySchema := buildPropertySchemaFromField(field, schemaMap, registry)
+		if propertySchema == nil {
+			continue
+		}
+		properties[*field.Name] = propertySchema
 	}
 	return &OpenAPIV3Schema{
 		Type:                "object",
@@ -1099,6 +1160,9 @@ func buildSchemaFromFields(
 // This function will use references for message types, and will build the schema inline for primitive types.
 func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registry *descriptor.Registry, resolvedNames map[string]string) *OpenAPIV3SchemaRef {
 	// This function handles the logic from your original code, mapping protobuf types to OpenAPI types.
+	if !isVisible(getFieldVisibilityOption(field), registry) {
+		return nil
+	}
 	var fieldMessage *descriptor.Message
 	if field.TypeName != nil {
 		fieldMessage, _ = registry.LookupMsg(*field.TypeName, *field.TypeName)
@@ -1353,6 +1417,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 }
 
 func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
+	if !isVisible(getFieldVisibilityOption(field), registry) {
+		return nil
+	}
 	var fieldMessage *descriptor.Message
 	if field.TypeName != nil {
 		fieldMessage, _ = registry.LookupMsg(*field.TypeName, *field.TypeName)
@@ -1569,6 +1636,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}
 		}
 		for _, enumValue := range enum.Value {
+			if !isVisible(getEnumValueVisibilityOption(enumValue), registry) {
+				continue
+			}
 			enumVariants = append(enumVariants, *enumValue.Name)
 		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
@@ -1631,4 +1701,84 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		}
 	}
 	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}
+}
+
+func getFieldVisibilityOption(fd *descriptor.Field) *visibility.VisibilityRule {
+	if fd.Options == nil {
+		return nil
+	}
+	if !proto.HasExtension(fd.Options, visibility.E_FieldVisibility) {
+		return nil
+	}
+	ext := proto.GetExtension(fd.Options, visibility.E_FieldVisibility)
+	opts, ok := ext.(*visibility.VisibilityRule)
+	if !ok {
+		return nil
+	}
+	return opts
+}
+
+func getServiceVisibilityOption(fd *descriptor.Service) *visibility.VisibilityRule {
+	if fd.Options == nil {
+		return nil
+	}
+	if !proto.HasExtension(fd.Options, visibility.E_ApiVisibility) {
+		return nil
+	}
+	ext := proto.GetExtension(fd.Options, visibility.E_ApiVisibility)
+	opts, ok := ext.(*visibility.VisibilityRule)
+	if !ok {
+		return nil
+	}
+	return opts
+}
+
+func getMethodVisibilityOption(fd *descriptor.Method) *visibility.VisibilityRule {
+	if fd.Options == nil {
+		return nil
+	}
+	if !proto.HasExtension(fd.Options, visibility.E_MethodVisibility) {
+		return nil
+	}
+	ext := proto.GetExtension(fd.Options, visibility.E_MethodVisibility)
+	opts, ok := ext.(*visibility.VisibilityRule)
+	if !ok {
+		return nil
+	}
+	return opts
+}
+
+func getEnumValueVisibilityOption(fd *descriptorpb.EnumValueDescriptorProto) *visibility.VisibilityRule {
+	if fd.Options == nil {
+		return nil
+	}
+	if !proto.HasExtension(fd.Options, visibility.E_ValueVisibility) {
+		return nil
+	}
+	ext := proto.GetExtension(fd.Options, visibility.E_ValueVisibility)
+	opts, ok := ext.(*visibility.VisibilityRule)
+	if !ok {
+		return nil
+	}
+	return opts
+}
+
+func isVisible(r *visibility.VisibilityRule, reg *descriptor.Registry) bool {
+	if r == nil {
+		return true
+	}
+
+	restrictions := strings.Split(strings.TrimSpace(r.Restriction), ",")
+	// No restrictions results in the element always being visible
+	if len(restrictions) == 0 {
+		return true
+	}
+
+	for _, restriction := range restrictions {
+		if reg.GetVisibilityRestrictionSelectors()[strings.TrimSpace(restriction)] {
+			return true
+		}
+	}
+
+	return false
 }

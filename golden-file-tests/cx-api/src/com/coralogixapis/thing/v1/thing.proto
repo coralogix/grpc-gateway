@@ -4,6 +4,7 @@ package com.coralogixapis.thing.v1;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
+import "google/api/visibility.proto";
 import "protoc-gen-openapiv3/options/annotations.proto";
 
 // Thing is a thing.
@@ -17,6 +18,7 @@ message Thing {
   // Creation timestamp of the thing.
   optional google.protobuf.Timestamp created_at = 4 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {example: "\"2021-01-01T00:00:00Z\""}];
   NestedStruct nested_field = 5;
+  string preview_field = 6 [(google.api.field_visibility).restriction = "PREVIEW"];
 }
 
 message NestedStruct { 
