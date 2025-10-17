@@ -4,6 +4,8 @@ package com.coralogixapis.thing.v1;
 
 import "com/coralogixapis/thing/v1/thing.proto";
 import "google/api/annotations.proto";
+import "google/api/http.proto";
+import "google/api/visibility.proto";
 import "protoc-gen-openapiv3/options/annotations.proto";
 
 // ThingService is the service for managing things.
@@ -37,6 +39,34 @@ service ThingService {
       summary: "Create Thing"
     };
   }
+
+  // Preview RPC.
+  rpc PreviewMethod(CreateThingRequest) returns (CreateThingResponse) {
+    option (google.api.http) = {
+      post: "/v1/things/preview"
+      body: "thing.name"
+    };
+    option (google.api.method_visibility).restriction = "PREVIEW";
+
+    option (grpc.gateway.protoc_gen_openapiv3.options.openapiv3_operation) = {
+      responses: {
+        key: "400"
+        value: {description: "Bad Request"}
+      }
+      responses: {
+        key: "401"
+        value: {description: "Unauthorized request"}
+      }
+      responses: {
+        key: "500"
+        value: {description: "Internal server error"}
+      }
+      tags: ["Things Service"]
+      summary: "Preview Method"
+    };
+  }
+
+
 
   // RPC for replacing a thing.
   rpc ReplaceThing(ReplaceThingRequest) returns (ReplaceThingResponse) {
