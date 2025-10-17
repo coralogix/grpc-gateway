@@ -1676,20 +1676,31 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 				Properties: make(map[string]*OpenAPIV3SchemaRef),
 			}
 			fieldMessage, err := registry.LookupMsg(*field.TypeName, *field.TypeName)
-			opts := fieldMessage.GetOptions()
-			if opts != nil && opts.MapEntry != nil && *opts.MapEntry {
-				var additionalProperties *OpenAPIV3SchemaRef = &OpenAPIV3SchemaRef{}
-				valueField := fieldMessage.GetField()[1]
-				schema.Type = "object"
-				if valueField != nil && valueField.TypeName != nil {
-					additionalProperties = schemaMap[*valueField.TypeName]
-				}
-				schema.AdditionalProperties = additionalProperties
-				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: schema}
-			}
 			if err != nil || fieldMessage == nil {
 				log.Printf("Warning: could not lookup message for field %s: %v", *field.Name, err)
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: schema}
+			}
+			opts := fieldMessage.GetOptions()
+			if opts != nil && opts.MapEntry != nil && *opts.MapEntry {
+				if len(fieldMessage.Fields) != 2 {
+					log.Printf("Warning: map field %s does not have exactly 2 fields", *field.Name)
+					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}
+				}
+				valueField := fieldMessage.Fields[1]
+				if valueField == nil {
+					log.Printf("Warning: could not find key/value fields for map field %s", *field.Name)
+					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}
+				}
+				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+					Type:                 "object",
+					AdditionalProperties: buildPropertySchemaFromFieldType(valueField, schemaMap, registry),
+					Title:                title,
+					Description:          description,
+					Deprecated:           deprecated,
+					ReadOnly:             readOnly,
+					Example:              example,
+					OpenAPIV3Extensions:  extensions,
+				}}
 			}
 			schemaRef := schemaMap[*field.TypeName]
 			if schemaRef != nil {
