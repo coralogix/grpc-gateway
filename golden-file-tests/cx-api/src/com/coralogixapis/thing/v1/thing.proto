@@ -19,6 +19,11 @@ message Thing {
   optional google.protobuf.Timestamp created_at = 4 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {example: "\"2021-01-01T00:00:00Z\""}];
   NestedStruct nested_field = 5;
   string preview_field = 6 [(google.api.field_visibility).restriction = "PREVIEW"];
+  ThingType thing_type = 7 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {example: "\"THING_TYPE_STANDARD\""}];
+  oneof polymorphic_field {
+    PolymorphicVariantA variant_a = 8;
+    PolymorphicVariantB variant_b = 9;
+  }
 }
 
 message NestedStruct { 
@@ -26,7 +31,13 @@ message NestedStruct {
   string string_field = 2;
 }
 
+message PolymorphicVariantA {
+  string field_a = 1;
+}
 
+message PolymorphicVariantB {
+  int32 field_b = 1;
+}
 
 enum ThingType {
   option (grpc.gateway.protoc_gen_openapiv3.options.openapiv3_enum) = {
