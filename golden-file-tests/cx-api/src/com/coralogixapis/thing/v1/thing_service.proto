@@ -6,6 +6,7 @@ import "com/coralogixapis/thing/v1/thing.proto";
 import "google/api/annotations.proto";
 import "google/api/http.proto";
 import "google/api/visibility.proto";
+import "google/protobuf/timestamp.proto";
 import "protoc-gen-openapiv3/options/annotations.proto";
 
 // ThingService is the service for managing things.
@@ -18,8 +19,8 @@ service ThingService {
   // RPC for creating a thing.
   rpc CreateThing(CreateThingRequest) returns (CreateThingResponse) {
     option (google.api.http) = {
-      post: "/v1/things/{thing.nested_field.numeric_field}"
-      body: "thing.name"
+      post: "/v1/things"
+      body: "*"
     };
 
     option (grpc.gateway.protoc_gen_openapiv3.options.openapiv3_operation) = {
@@ -44,7 +45,7 @@ service ThingService {
   rpc PreviewMethod(CreateThingRequest) returns (CreateThingResponse) {
     option (google.api.http) = {
       post: "/v1/things/preview"
-      body: "thing.name"
+      body: "*"
     };
     option (google.api.method_visibility).restriction = "PREVIEW";
 
@@ -71,8 +72,8 @@ service ThingService {
   // RPC for replacing a thing.
   rpc ReplaceThing(ReplaceThingRequest) returns (ReplaceThingResponse) {
     option (google.api.http) = {
-      put: "/v1/things/{thing.id}"
-      body: "*"
+      put: "/v1/things/{thing_id}"
+      body: "thing"
     };
 
     option (grpc.gateway.protoc_gen_openapiv3.options.openapiv3_operation) = {
@@ -139,7 +140,7 @@ service ThingService {
 
   // RPC for listing things with pagination.
   rpc ListThings(ListThingsRequest) returns (ListThingsResponse) {
-    option (google.api.http) = {get: "/v1/things"};
+    option (google.api.http) = {get: "/v1/things/{page_size}"};
 
     option (grpc.gateway.protoc_gen_openapiv3.options.openapiv3_operation) = {
       responses: {
@@ -162,9 +163,21 @@ service ThingService {
 
 // CreateThingRequest is the request for the CreateThing RPC.
 message CreateThingRequest {
-  //  The thing to create.
-  Thing thing = 1;
-  string a_query_parameter = 2;
+  // ID is the unique identifier of the thing.
+  string id = 1 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {example: "\"123e4567-e89b-12d3-a456-426614174000\""}];
+
+  // Name of the thing.
+  string name = 2 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {example: "\"A Thing's Name\""}];
+
+  // Creation timestamp of the thing.
+  optional google.protobuf.Timestamp created_at = 4 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {example: "\"2021-01-01T00:00:00Z\""}];
+  NestedStruct nested_field = 5;
+  string preview_field = 6 [(google.api.field_visibility).restriction = "PREVIEW"];
+  ThingType thing_type = 7 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {example: "\"THING_TYPE_STANDARD\""}];
+  oneof polymorphic_field {
+    PolymorphicVariantA variant_a = 8;
+    PolymorphicVariantB variant_b = 9;
+  }
 }
 
 // CreateThingResponse is the response for the CreateThing RPC.
@@ -176,16 +189,16 @@ message CreateThingResponse {
 // ListThingsRequest is the request for the ListThings RPC.
 message ListThingsRequest {
   // The filter.
-  optional string filter = 1; // use whatever type is actually required
+  string filter = 1; // use whatever type is actually required
 
   // The page size.
-  optional int32 page_size = 2;
+  int32 page_size = 2;
 
   // The skip count.
-  optional int32 skip = 3;
+  int32 skip = 3;
 
   // The page token.
-  optional string page_token = 4;
+  string page_token = 4;
 }
 
 // ListThingsResponse is the response for the ListThings RPC.
@@ -203,6 +216,7 @@ message ListThingsResponse {
 // ReplaceThingRequest is the request for the ReplaceThing RPC.
 message ReplaceThingRequest {
   //  The thing to replace.
+  string thing_id = 2;
   Thing thing = 1;
 }
 

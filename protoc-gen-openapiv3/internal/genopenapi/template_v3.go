@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"sort"
 	"strings"
 
 	"slices"
@@ -115,7 +116,8 @@ func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 	for _, schema := range schemas {
 		schema.OpenAPIV3Schema.CamelCase()
 	}
-	paths, err := buildOpenAPIV3Paths(param, resolvedNames)
+	paths, schemasToAddToComponents, err := buildOpenAPIV3Paths(param, resolvedNames)
+	maps.Copy(schemas, schemasToAddToComponents)
 	if err != nil {
 		return OpenAPIV3Document{}, err
 	}
@@ -161,8 +163,9 @@ func resolveNames(param param) map[string]string {
 	}
 }
 
-func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV3Paths, error) {
+func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV3Paths, map[string]*OpenAPIV3SchemaRef, error) {
 	paths := OpenAPIV3Paths{}
+	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
 	for _, svc := range param.Services {
 		if !isVisible(getServiceVisibilityOption(svc), param.reg) {
 			continue
@@ -231,11 +234,11 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 					paths[path] = pathItem
 				}
 
-				schemaMap := buildMessageSchemas(param)
+				schemaMap, messageOneOfSchemas := buildMessageSchemas(param, resolvedNames)
+				requestBody, bodyOneOfSchemas := buildRequestBody(b, schemaMap, param.reg, resolvedNames)
 				pathParameters := buildPathParameters(b, param.reg, resolvedNames)
-				queryParameters := buildQueryParameters(b, schemaMap, param.reg)
+				queryParameters := buildQueryParameters(b, schemaMap, resolvedNames, param.reg)
 				parameters := append(pathParameters, queryParameters...)
-				requestBody := buildRequestBody(b, schemaMap, param.reg, resolvedNames)
 				if requestBody != nil {
 					requestBody.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema.CamelCase()
 				}
@@ -275,10 +278,12 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				case "TRACE":
 					pathItem.Trace = op
 				}
+				maps.Copy(schemasToAddToComponents, bodyOneOfSchemas)
+				maps.Copy(schemasToAddToComponents, messageOneOfSchemas)
 			}
 		}
 	}
-	return paths, nil
+	return paths, schemasToAddToComponents, nil
 }
 
 func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) OpenAPIV3Responses {
@@ -334,7 +339,7 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 }
 
 func buildTags(param param) ([]OpenAPIV3Tag, error) {
-	openApiV3TagSet := map[OpenAPIV3Tag]struct{}{}
+	openApiV3TagSet := map[string]OpenAPIV3Tag{}
 	for _, svc := range param.Services {
 		if !proto.HasExtension(svc.Options, options.E_Openapiv3Tag) {
 			continue
@@ -352,11 +357,11 @@ func buildTags(param param) ([]OpenAPIV3Tag, error) {
 					URL:         tag.GetExternalDocs().GetUrl(),
 				},
 			}
-			openApiV3TagSet[openapiV3Tag] = struct{}{}
+			openApiV3TagSet[tag.GetName()] = openapiV3Tag
 		}
 	}
 	openapiV3Tags := make([]OpenAPIV3Tag, 0, len(openApiV3TagSet))
-	for tag := range openApiV3TagSet {
+	for _, tag := range openApiV3TagSet {
 		openapiV3Tags = append(openapiV3Tags, tag)
 	}
 	return openapiV3Tags, nil
@@ -425,7 +430,7 @@ func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Regis
 	return parameterRefs
 }
 
-func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry) []OpenAPIV3ParameterRef {
+func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) []OpenAPIV3ParameterRef {
 	if binding.Body != nil && len(binding.Body.FieldPath) == 0 {
 		return []OpenAPIV3ParameterRef{}
 	}
@@ -471,8 +476,21 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 			continue
 		}
 
-		queryParameterSchema := buildPropertySchemaFromField(field, schemaMap, registry)
+		queryParameterSchema := buildPropertySchemaFromField(field, schemaMap, resolvedNames, registry)
 		if queryParameterSchema == nil {
+			continue
+		}
+		// This means we're dealing with an enum, so we can just create a reference parameter.
+		if queryParameterSchema.Ref != "" {
+			parameterRef := OpenAPIV3ParameterRef{
+				OpenAPIV3Parameter: &OpenAPIV3Parameter{
+					Name:     *field.Name,
+					In:       "query",
+					Required: false,
+					Schema:   queryParameterSchema,
+				},
+			}
+			parameterRefs = append(parameterRefs, parameterRef)
 			continue
 		}
 		// Follow the path of the field to remove, and remove it from the body schema
@@ -516,14 +534,15 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 	return parameterRefs
 }
 
-func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry, resolvedNames map[string]string) *OpenAPIV3RequestBodyRef {
+func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry, resolvedNames map[string]string) (*OpenAPIV3RequestBodyRef, map[string]*OpenAPIV3SchemaRef) {
 	if binding.Body == nil {
-		return nil
+		return nil, map[string]*OpenAPIV3SchemaRef{}
 	}
+	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
 	bodyRepresentation := extractRequestBodyFieldCombinations(binding, registry)
 	parameterFields := extractParameterFields(binding)
-	oneOfSchemas := make([]*OpenAPIV3SchemaRef, 0, len(bodyRepresentation.fieldCombinations))
-	for _, bodyFields := range bodyRepresentation.fieldCombinations {
+	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
+	for combinationName, bodyFields := range bodyRepresentation.fieldCombinations {
 		bodyProperties := make(map[string]*OpenAPIV3SchemaRef)
 		for _, bodyField := range bodyFields {
 			if !isVisible(getFieldVisibilityOption(bodyField.Field), registry) {
@@ -545,9 +564,10 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 				fieldMessage, err := registry.LookupMsg(*bodyField.Field.TypeName, *bodyField.Field.TypeName)
 				if err != nil || fieldMessage == nil {
 					log.Printf("Warning: field %s has no message type", *bodyField.Field.Name)
-					return nil
+					return nil, map[string]*OpenAPIV3SchemaRef{}
 				}
-				fieldSchema := buildOpenAPIV3SchemaFromMessage(fieldMessage, schemaMap, registry)
+				fieldSchema, messageOneOfSchemas := buildOpenAPIV3SchemaFromMessage(fieldMessage, schemaMap, resolvedNames, registry)
+				maps.Copy(schemasToAddToComponents, messageOneOfSchemas)
 				// Follow the path of the field to remove, and remove it from the body schema
 				if len(fieldSchema.Properties) > 0 {
 					properties := &fieldSchema.Properties
@@ -595,22 +615,33 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 				AdditionalProperties: false,
 				OpenAPIV3Extensions:  bodyRepresentation.extensions,
 			}
-			oneOfSchemas = append(oneOfSchemas, &OpenAPIV3SchemaRef{
+			oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
 				OpenAPIV3Schema: &schema,
-			})
+			}
 		}
+	}
+	oneOfSchemaRefs := []*OpenAPIV3SchemaRef{}
+	for combinationName := range oneOfSchemas {
+		schemaRef := OpenAPIV3SchemaRef{
+			Ref: "#/components/schemas/" + combinationName,
+		}
+		oneOfSchemaRefs = append(oneOfSchemaRefs, &schemaRef)
 	}
 	var bodySchema *OpenAPIV3Schema
 	if len(oneOfSchemas) == 0 {
-		return nil
+		return nil, map[string]*OpenAPIV3SchemaRef{}
 	}
 	if len(oneOfSchemas) > 1 {
 		bodySchema = &OpenAPIV3Schema{
 			Type:  "object",
-			OneOf: oneOfSchemas,
+			OneOf: oneOfSchemaRefs,
 		}
+		schemasToAddToComponents = oneOfSchemas
 	} else {
-		bodySchema = oneOfSchemas[0].OpenAPIV3Schema
+		for _, schema := range oneOfSchemas {
+			bodySchema = schema.OpenAPIV3Schema
+			break
+		}
 	}
 
 	bodyContent := make(map[string]OpenAPIV3MediaType)
@@ -619,15 +650,18 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			OpenAPIV3Schema: bodySchema,
 		},
 	}
+	if len(oneOfSchemas) > 1 {
+		schemasToAddToComponents = oneOfSchemas
+	}
 	return &OpenAPIV3RequestBodyRef{
 		OpenAPIV3RequestBody: &OpenAPIV3RequestBody{
 			Content: bodyContent,
 		},
-	}
+	}, schemasToAddToComponents
 }
 
 type openAPIV3BodyRepresentation struct {
-	fieldCombinations [][]protoField
+	fieldCombinations map[string][]protoField
 	requiredFields    []string
 	title             string
 	description       string
@@ -650,7 +684,7 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		// and therefore we just return the field as is.
 		if *fieldPathComponent.Target.Type != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
 			return openAPIV3BodyRepresentation{
-				fieldCombinations: [][]protoField{{
+				fieldCombinations: map[string][]protoField{"": {
 					{
 						FullPathToField: prefix,
 						Field:           fieldPathComponent.Target,
@@ -703,6 +737,13 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		}
 		oneofGroups[*oneofDecl.Name] = append(oneofGroups[*oneofDecl.Name], field)
 	}
+	for group := range oneofGroups {
+		numberOfFieldsInGroup := len(oneofGroups[group])
+		if numberOfFieldsInGroup <= 1 {
+			fieldsNotPartOfOneofGroup = append(fieldsNotPartOfOneofGroup, oneofGroups[group]...)
+			delete(oneofGroups, group)
+		}
+	}
 
 	if len(oneofGroups) == 0 {
 		for _, field := range fieldsNotPartOfOneofGroup {
@@ -713,7 +754,7 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 			bodyFields = append(bodyFields, bodyField)
 		}
 		return openAPIV3BodyRepresentation{
-			fieldCombinations: [][]protoField{bodyFields},
+			fieldCombinations: map[string][]protoField{*fieldMessage.Name: bodyFields},
 			requiredFields:    requiredFields,
 			title:             title,
 			description:       description,
@@ -722,9 +763,9 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		}
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups)
-	protoFields := make([][]protoField, 0, len(combinationsOfFieldsPartOfOneofGroups))
-	for _, combination := range combinationsOfFieldsPartOfOneofGroups {
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, *fieldMessage.Name)
+	protoFields := make(map[string][]protoField)
+	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
 		fields := make([]protoField, 0, len(combination)+len(fieldsNotPartOfOneofGroup))
 		for _, field := range fieldsNotPartOfOneofGroup {
 			bodyField := protoField{
@@ -741,7 +782,7 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 			}
 			fields = append(fields, bodyField)
 		}
-		protoFields = append(protoFields, fields)
+		protoFields[combinationName] = fields
 	}
 
 	return openAPIV3BodyRepresentation{
@@ -797,8 +838,9 @@ func buildMessageSchemasWithReferences(param param, resolvedNames map[string]str
 	return schemas
 }
 
-func buildMessageSchemas(param param) map[string]*OpenAPIV3SchemaRef {
+func buildMessageSchemas(param param, resolvedNames map[string]string) (map[string]*OpenAPIV3SchemaRef, map[string]*OpenAPIV3SchemaRef) {
 	schemaMap := make(map[string]*OpenAPIV3SchemaRef)
+	oneOfSchemas := make(map[string]*OpenAPIV3SchemaRef)
 
 	for _, message := range param.Messages {
 		schemaMap[message.FQMN()] = &OpenAPIV3SchemaRef{
@@ -808,12 +850,12 @@ func buildMessageSchemas(param param) map[string]*OpenAPIV3SchemaRef {
 
 	for _, message := range param.Messages {
 		schemaRefPtr := schemaMap[message.FQMN()]
-		schema := buildOpenAPIV3SchemaFromMessage(message, schemaMap, param.reg)
+		schema, messageOneOfSchemas := buildOpenAPIV3SchemaFromMessage(message, schemaMap, resolvedNames, param.reg)
 		schemaRefPtr.OpenAPIV3Schema = schema
-
+		maps.Copy(oneOfSchemas, messageOneOfSchemas)
 	}
 
-	return schemaMap
+	return schemaMap, oneOfSchemas
 }
 
 func buildEnumSchemas(param param, resolvedNames map[string]string) map[string]*OpenAPIV3SchemaRef {
@@ -932,46 +974,30 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 		oneofGroups[*oneofDecl.Name] = append(oneofGroups[*oneofDecl.Name], field)
 	}
 
+	for group := range oneofGroups {
+		numberOfFieldsInGroup := len(oneofGroups[group])
+		if numberOfFieldsInGroup <= 1 {
+			fieldsNotPartOfOneofGroup = append(fieldsNotPartOfOneofGroup, oneofGroups[group]...)
+			delete(oneofGroups, group)
+		}
+	}
+
 	if len(oneofGroups) == 0 {
 		return buildSchemaFromFieldsWithReferences(fieldsNotPartOfOneofGroup, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups)
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, *message.Name)
 
-	oneOfSchemas := make([]*OpenAPIV3SchemaRef, 0, len(combinationsOfFieldsPartOfOneofGroups))
-	for _, combination := range combinationsOfFieldsPartOfOneofGroups {
-		properties := make(map[string]*OpenAPIV3SchemaRef)
-
-		for _, field := range fieldsNotPartOfOneofGroup {
-			propertySchema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
-			if propertySchema != nil {
-				properties[*field.Name] = propertySchema
-			}
-		}
-
-		for _, field := range combination {
-			propertySchema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
-			if propertySchema != nil {
-				properties[*field.Name] = propertySchema
-			}
-		}
-
-		schema := &OpenAPIV3Schema{
-			Type:                 "object",
-			Title:                title,
-			Description:          description,
-			ExternalDocs:         externalDocs,
-			OpenAPIV3Extensions:  extensions,
-			Properties:           properties,
-			Required:             requiredFields,
-			AdditionalProperties: false,
-		}
+	oneOfSchemas := []*OpenAPIV3SchemaRef{}
+	for combinationName := range combinationsOfFieldsPartOfOneofGroups {
 		oneOfSchemas = append(oneOfSchemas, &OpenAPIV3SchemaRef{
-			OpenAPIV3Schema: schema,
+			Ref: "#/components/schemas/" + combinationName,
 		})
 	}
 	if len(oneOfSchemas) == 1 {
-		return oneOfSchemas[0].OpenAPIV3Schema
+		for _, schema := range oneOfSchemas {
+			return schema.OpenAPIV3Schema
+		}
 	}
 
 	return &OpenAPIV3Schema{
@@ -979,7 +1005,7 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 	}
 }
 
-func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry) *OpenAPIV3Schema {
+func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) (*OpenAPIV3Schema, map[string]*OpenAPIV3SchemaRef) {
 	var fieldsNotPartOfOneofGroup []*descriptor.Field
 	oneofGroups := make(map[string][]*descriptor.Field)
 	var title string
@@ -1018,70 +1044,68 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		}
 		oneofGroups[*oneofDecl.Name] = append(oneofGroups[*oneofDecl.Name], field)
 	}
-
-	if len(oneofGroups) == 0 {
-		return buildSchemaFromFields(fieldsNotPartOfOneofGroup, schemaMap, requiredFields, title, description, externalDocs, extensions, registry)
+	for group := range oneofGroups {
+		numberOfFieldsInGroup := len(oneofGroups[group])
+		if numberOfFieldsInGroup <= 1 {
+			fieldsNotPartOfOneofGroup = append(fieldsNotPartOfOneofGroup, oneofGroups[group]...)
+			delete(oneofGroups, group)
+		}
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups)
+	if len(oneofGroups) == 0 {
+		return buildSchemaFromFields(fieldsNotPartOfOneofGroup, schemaMap, requiredFields, title, description, externalDocs, extensions, resolvedNames, registry), map[string]*OpenAPIV3SchemaRef{}
+	}
 
-	oneOfSchemas := make([]*OpenAPIV3SchemaRef, 0, len(combinationsOfFieldsPartOfOneofGroups))
-	for _, combination := range combinationsOfFieldsPartOfOneofGroups {
-		properties := make(map[string]*OpenAPIV3SchemaRef)
-		for _, field := range fieldsNotPartOfOneofGroup {
-			propertySchema := buildPropertySchemaFromField(field, schemaMap, registry)
-			if propertySchema != nil {
-				properties[*field.Name] = propertySchema
-			}
-		}
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, *message.Name)
 
+	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
+	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
+		combinationFields := []*descriptor.Field{}
 		for _, field := range combination {
-			propertySchema := buildPropertySchemaFromField(field, schemaMap, registry)
-			if propertySchema != nil {
-				properties[*field.Name] = propertySchema
-			}
+			combinationFields = append(combinationFields, field)
 		}
-
-		oneOfSchemas = append(oneOfSchemas, &OpenAPIV3SchemaRef{
-			OpenAPIV3Schema: &OpenAPIV3Schema{
-				Type:                 "object",
-				Title:                title,
-				Description:          description,
-				ExternalDocs:         externalDocs,
-				Properties:           properties,
-				Required:             requiredFields,
-				OpenAPIV3Extensions:  extensions,
-				AdditionalProperties: false,
-			},
-		})
+		allSchemaFields := append(fieldsNotPartOfOneofGroup, combinationFields...)
+		schema := buildSchemaFromFieldsWithReferences(allSchemaFields, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
+		oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
+			OpenAPIV3Schema: schema,
+		}
 	}
 
 	if len(oneOfSchemas) == 1 {
-		return oneOfSchemas[0].OpenAPIV3Schema
+		for _, schema := range oneOfSchemas {
+			return schema.OpenAPIV3Schema, map[string]*OpenAPIV3SchemaRef{}
+		}
+	}
+
+	oneOfSchemaRefs := []*OpenAPIV3SchemaRef{}
+	for combinationName := range oneOfSchemas {
+		schemaRef := OpenAPIV3SchemaRef{
+			Ref: "#/components/schemas/" + combinationName,
+		}
+		oneOfSchemaRefs = append(oneOfSchemaRefs, &schemaRef)
 	}
 
 	return &OpenAPIV3Schema{
-		OneOf: oneOfSchemas,
-	}
+		OneOf: oneOfSchemaRefs,
+	}, oneOfSchemas
 }
 
-// I made this function generic for ease of testing. Concretely, F is really a *descriptor.Field.
-// This could have been much clearer with recursion, but an iterative approach is safer in production code.
-func generateOneOfCombinations[F any](oneofGroups map[string][]F) []map[string]F {
-	allCombinations := []map[string]F{{}}
+func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messageName string) map[string]map[string]*descriptor.Field {
+	allCombinations := []map[string]*descriptor.Field{{}}
 
 	oneofGroupNames := make([]string, 0, len(oneofGroups))
 	for name := range oneofGroups {
 		oneofGroupNames = append(oneofGroupNames, name)
 	}
+	sort.Strings(oneofGroupNames)
 
 	for _, groupName := range oneofGroupNames {
 		variants := oneofGroups[groupName]
-		newCombinations := []map[string]F{}
+		newCombinations := []map[string]*descriptor.Field{}
 
 		for _, existingCombination := range allCombinations {
 			for _, variant := range variants {
-				newCombination := make(map[string]F)
+				newCombination := make(map[string]*descriptor.Field)
 				maps.Copy(newCombination, existingCombination)
 
 				newCombination[groupName] = variant
@@ -1089,11 +1113,30 @@ func generateOneOfCombinations[F any](oneofGroups map[string][]F) []map[string]F
 				newCombinations = append(newCombinations, newCombination)
 			}
 		}
-
 		allCombinations = newCombinations
 	}
 
-	return allCombinations
+	namedCombinations := make(map[string]map[string]*descriptor.Field, len(allCombinations))
+
+	for _, combination := range allCombinations {
+		keyParts := make([]string, 0, len(oneofGroupNames))
+
+		for _, groupName := range oneofGroupNames {
+			variant, ok := combination[groupName]
+			if !ok {
+				continue
+			}
+			keyPart := fmt.Sprintf("%v", variant.GetName())
+			keyParts = append(keyParts, keyPart)
+		}
+
+		combinationName := strings.Join(keyParts, "_")
+		combinationName = messageName + "_" + combinationName
+		combinationName = toPascalCase(combinationName)
+		namedCombinations[combinationName] = combination
+	}
+
+	return namedCombinations
 }
 
 // Helper function to build a single OpenAPI schema from a list of fields.
@@ -1135,11 +1178,12 @@ func buildSchemaFromFields(
 	description string,
 	externalDocs *OpenAPIV3ExternalDocs,
 	extensions OpenAPIV3Extensions,
+	resolvedNames map[string]string,
 	registry *descriptor.Registry,
 ) *OpenAPIV3Schema {
 	properties := make(map[string]*OpenAPIV3SchemaRef)
 	for _, field := range fields {
-		propertySchema := buildPropertySchemaFromField(field, schemaMap, registry)
+		propertySchema := buildPropertySchemaFromField(field, schemaMap, resolvedNames, registry)
 		if propertySchema == nil {
 			continue
 		}
@@ -1416,7 +1460,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}
 }
 
-func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
+func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
 	if !isVisible(getFieldVisibilityOption(field), registry) {
 		return nil
 	}
@@ -1431,15 +1475,15 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 	if field.Label != nil && *field.Label == descriptorpb.FieldDescriptorProto_LABEL_REPEATED && (opts == nil || opts.MapEntry == nil || !*opts.MapEntry) {
 		schema := &OpenAPIV3Schema{
 			Type:  "array",
-			Items: buildPropertySchemaFromFieldType(field, schemaMap, registry),
+			Items: buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry),
 		}
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
 	}
-	return buildPropertySchemaFromFieldType(field, schemaMap, registry)
+	return buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry)
 }
-func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
+func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
 	// This function handles the logic from your original code, mapping protobuf types to OpenAPI types.
 	var title string
 	var maximum float64
@@ -1610,48 +1654,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
-		var enumDefaultValue interface{}
-		if proto.HasExtension(field.Options, options.E_Openapiv3Enum) {
-			enumExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Enum).(*options.EnumSchema)
-			enumOpenAPIV3Extensions := OpenAPIV3Extensions{}
-			for k, v := range enumExtension.Extensions {
-				(enumOpenAPIV3Extensions)[k] = v
-			}
-			if ok {
-				if enumExtension.GetDefault() != "" {
-					enumDefaultValue = enumExtension.GetDefault()
-				} else {
-					enumDefaultValue = nil
-				}
-				title = enumExtension.Title
-				description = enumExtension.Description
-				readOnly = enumExtension.ReadOnly
-				extensions = enumOpenAPIV3Extensions
-				example = RawExample(enumExtension.Example)
-			}
-		}
-		enumVariants := make([]string, 0)
-		enum, err := registry.LookupEnum(*field.TypeName, *field.TypeName)
-		if err != nil || enum == nil {
-			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}
-		}
-		for _, enumValue := range enum.Value {
-			if !isVisible(getEnumValueVisibilityOption(enumValue), registry) {
-				continue
-			}
-			enumVariants = append(enumVariants, *enumValue.Name)
-		}
-		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
-			Type:                "string",
-			Enum:                enumVariants,
-			Default:             enumDefaultValue,
-			Title:               title,
-			Description:         description,
-			Deprecated:          deprecated,
-			ReadOnly:            readOnly,
-			Example:             example,
-			OpenAPIV3Extensions: extensions,
-		}}
+		return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
 			schemaCopy := *schema // Create a copy to avoid modifying the original schema
@@ -1693,7 +1696,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 				}
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
-					AdditionalProperties: buildPropertySchemaFromFieldType(valueField, schemaMap, registry),
+					AdditionalProperties: buildPropertySchemaFromFieldType(valueField, schemaMap, resolvedNames, registry),
 					Title:                title,
 					Description:          description,
 					Deprecated:           deprecated,
