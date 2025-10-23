@@ -986,7 +986,7 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 		return buildSchemaFromFieldsWithReferences(fieldsNotPartOfOneofGroup, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, *message.Name)
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, resolvedNames[message.FQMN()])
 
 	oneOfSchemas := []*OpenAPIV3SchemaRef{}
 	for combinationName := range combinationsOfFieldsPartOfOneofGroups {
@@ -1056,7 +1056,7 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		return buildSchemaFromFields(fieldsNotPartOfOneofGroup, schemaMap, requiredFields, title, description, externalDocs, extensions, resolvedNames, registry), map[string]*OpenAPIV3SchemaRef{}
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, *message.Name)
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, resolvedNames[message.FQMN()])
 
 	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
 	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
@@ -1066,6 +1066,9 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		}
 		allSchemaFields := append(fieldsNotPartOfOneofGroup, combinationFields...)
 		schema := buildSchemaFromFieldsWithReferences(allSchemaFields, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
+		if schema.AdditionalProperties == nil {
+			schema.AdditionalProperties = false
+		}
 		oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
