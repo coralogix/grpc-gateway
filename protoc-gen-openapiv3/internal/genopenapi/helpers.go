@@ -38,7 +38,7 @@ func toPascalCase(s string) string {
 	capitalizeNext := true
 
 	for _, r := range s {
-		if r == '_' {
+		if r == '_' || r == '.' || r == '-' {
 			capitalizeNext = true
 			continue // Skip the underscore itself
 		}
