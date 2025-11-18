@@ -47,3 +47,75 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 
 	})
 }
+
+func Test_sanitizeUrlPath(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{
+			name:     "Standard Case",
+			input:    "my/path/{some.url.path}",
+			expected: "my/path/{path}",
+		},
+		{
+			name:     "Multiple Dots Per Segment",
+			input:    "a.b.c/d.e.f",
+			expected: "c/f",
+		},
+		{
+			name:     "No Dots Present",
+			input:    "hello/world/test",
+			expected: "hello/world/test",
+		},
+		{
+			name:     "Leading and Trailing Slashes",
+			input:    "/folder.name/file.ext/",
+			expected: "/name/ext/",
+		},
+		{
+			name:     "Empty String Input",
+			input:    "",
+			expected: "",
+		},
+		{
+			name:     "Root Path Only",
+			input:    "/",
+			expected: "/",
+		},
+		{
+			name:     "Segment is only Dots",
+			input:    "..../path",
+			expected: "/path",
+		},
+		{
+			name:     "All Segments Have Dots",
+			input:    "v1.2/api.users/get.list.json",
+			expected: "2/users/json",
+		},
+		{
+			name:     "Segments Containing Curly Braces (Placeholders)",
+			input:    "templates/{user.id}/v1.0.0/data.json",
+			expected: "templates/{id}/0/json",
+		},
+		{
+			name:     "Double Slashes",
+			input:    "path//with.double.slash",
+			expected: "path//slash",
+		},
+	}
+
+	// Iterate over the test cases
+	for _, tt := range tests {
+		// Run each test case as a subtest
+		t.Run(tt.name, func(t *testing.T) {
+			actual := sanitizeURLPath(tt.input)
+
+			// Check if the actual output matches the expected output
+			if actual != tt.expected {
+				t.Errorf("sanitizeURLPath(%q) failed.\nExpected: %q\n  Actual: %q", tt.input, tt.expected, actual)
+			}
+		})
+	}
+}

@@ -176,11 +176,13 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 			}
 			var mainBinding *descriptor.Binding
 			var bindings []*descriptor.Binding
+
 			for _, b := range m.Bindings {
 				if b.Index == 0 {
 					mainBinding = b
 				}
 			}
+
 			if param.reg.IsIgnoreAdditionalBindings() && mainBinding != nil {
 				bindings = []*descriptor.Binding{mainBinding}
 
@@ -224,7 +226,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 						}
 					}
 				}
-				path := b.PathTmpl.Template
+				path := sanitizeURLPath(b.PathTmpl.Template)
 
 				// Ensure the path item exists
 				pathItem, ok := paths[path]
@@ -284,6 +286,33 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 		}
 	}
 	return paths, schemasToAddToComponents, nil
+}
+
+func sanitizeURLPath(urlPath string) string {
+	segments := strings.Split(urlPath, "/")
+
+	var sanitizedSegments []string
+
+	for _, segment := range segments {
+		if segment == "" {
+			sanitizedSegments = append(sanitizedSegments, segment)
+			continue
+		}
+
+		parts := strings.Split(segment, ".")
+		partPrefix := ""
+		if strings.HasPrefix(segment, "{") && strings.HasSuffix(segment, "}") && len(parts) > 1 {
+			partPrefix = "{"
+		}
+
+		if len(parts) > 0 {
+			lastPart := parts[len(parts)-1]
+			sanitizedSegments = append(sanitizedSegments, partPrefix+lastPart)
+		} else {
+			sanitizedSegments = append(sanitizedSegments, "")
+		}
+	}
+	return strings.Join(sanitizedSegments, "/")
 }
 
 func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) OpenAPIV3Responses {
@@ -409,7 +438,7 @@ func buildResponseBody(binding *descriptor.Binding, registry *descriptor.Registr
 func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Registry, resolvedNames map[string]string) []OpenAPIV3ParameterRef {
 	parameterRefs := []OpenAPIV3ParameterRef{}
 	for _, param := range binding.PathParams {
-		paramName := param.FieldPath.String()
+		paramName := param.FieldPath[len(param.FieldPath)-1].Target.Name
 		field := param.Target
 		if !isVisible(getFieldVisibilityOption(field), registry) {
 			continue
@@ -418,7 +447,7 @@ func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Regis
 		if fieldOpenApiV3Schema != nil {
 			parameterRef := OpenAPIV3ParameterRef{
 				OpenAPIV3Parameter: &OpenAPIV3Parameter{
-					Name:     paramName,
+					Name:     *paramName,
 					In:       "path",
 					Required: true,
 					Schema:   fieldOpenApiV3Schema,
@@ -1220,18 +1249,24 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 	}
 
 	if field.Label != nil && *field.Label == descriptorpb.FieldDescriptorProto_LABEL_REPEATED && (opts == nil || opts.MapEntry == nil || !*opts.MapEntry) {
+		itemSchema, example := buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames, true)
+
 		schema := &OpenAPIV3Schema{
 			Type:  "array",
-			Items: buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames),
+			Items: itemSchema,
+		}
+		if example != nil {
+			schema.Example = example
 		}
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
 	}
-	return buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames)
+	propertySchema, _ := buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames, false)
+	return propertySchema
 }
 
-func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, registry *descriptor.Registry, resolvedNames map[string]string) *OpenAPIV3SchemaRef {
+func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, registry *descriptor.Registry, resolvedNames map[string]string, isArrayOrMapElement bool) (*OpenAPIV3SchemaRef, RawExample) {
 	var title string
 	var maximum float64
 	var minimum float64
@@ -1244,7 +1279,8 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	var description string
 	var readOnly bool
 	var deprecated bool
-	var example RawExample
+	var arrayExample RawExample
+	var fieldExample RawExample
 	var extensions OpenAPIV3Extensions
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
@@ -1269,7 +1305,11 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			multipleOf = fieldExtension.MultipleOf
 			description = fieldExtension.Description
 			readOnly = fieldExtension.ReadOnly
-			example = RawExample(fieldExtension.Example)
+			if isArrayOrMapElement {
+				arrayExample = RawExample(fieldExtension.Example)
+			} else {
+				fieldExample = RawExample(fieldExtension.Example)
+			}
 		}
 	}
 	if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BOOL {
@@ -1279,9 +1319,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_DOUBLE {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "number",
@@ -1295,9 +1335,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_FLOAT {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "number",
@@ -1311,9 +1351,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT32 {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
@@ -1327,9 +1367,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
@@ -1343,9 +1383,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT32 {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
@@ -1359,9 +1399,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
@@ -1375,9 +1415,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
@@ -1388,9 +1428,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			MaxLength:           maxLength,
 			MinLength:           minLength,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BYTES {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
@@ -1401,12 +1441,12 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			MaxLength:           maxLength,
 			MinLength:           minLength,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
 		if field.TypeName != nil {
-			return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}
+			return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}, arrayExample
 		}
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
@@ -1424,13 +1464,13 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			schemaCopy.MaxLength = maxLength
 			schemaCopy.MinLength = minLength
 			schemaCopy.OpenAPIV3Extensions = extensions
-			schemaCopy.Example = example
-			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}
+			schemaCopy.Example = fieldExample
+			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}, arrayExample
 		} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
 			fieldMessage, err := registry.LookupMsg(*field.TypeName, *field.TypeName)
 			if err != nil {
 				log.Printf("Warning: could not lookup message for field %s: %v", *field.Name, err)
-				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}
+				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 			}
 			opts := fieldMessage.GetOptions()
 			// We need to check if this field is an actual message, or a message generated by the protobuf compiler
@@ -1438,29 +1478,30 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			if opts != nil && opts.MapEntry != nil && *opts.MapEntry {
 				if len(fieldMessage.Fields) != 2 {
 					log.Printf("Warning: map field %s does not have exactly 2 fields", *field.Name)
-					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}
+					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 				}
 				valueField := fieldMessage.Fields[1]
 				if valueField == nil {
 					log.Printf("Warning: could not find key/value fields for map field %s", *field.Name)
-					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}
+					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 				}
+				additionalProperties, mapExample := buildPropertySchemaWithReferencesFromFieldType(valueField, registry, resolvedNames, true)
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
-					AdditionalProperties: buildPropertySchemaWithReferencesFromFieldType(valueField, registry, resolvedNames),
+					AdditionalProperties: additionalProperties,
 					Title:                title,
 					Description:          description,
 					Deprecated:           deprecated,
 					ReadOnly:             readOnly,
-					Example:              example,
+					Example:              mapExample,
 					OpenAPIV3Extensions:  extensions,
-				}}
+				}}, arrayExample
 			} else {
-				return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}
+				return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}, arrayExample
 			}
 		}
 	}
-	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}
+	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}, arrayExample
 }
 
 func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
@@ -1476,18 +1517,22 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 		opts = fieldMessage.Options
 	}
 	if field.Label != nil && *field.Label == descriptorpb.FieldDescriptorProto_LABEL_REPEATED && (opts == nil || opts.MapEntry == nil || !*opts.MapEntry) {
+		propertySchema, example := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry, true)
 		schema := &OpenAPIV3Schema{
 			Type:  "array",
-			Items: buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry),
+			Items: propertySchema,
+		}
+		if example != nil {
+			schema.Example = example
 		}
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
 	}
-	return buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry)
+	propertySchema, _ := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry, false)
+	return propertySchema
 }
-func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
-	// This function handles the logic from your original code, mapping protobuf types to OpenAPI types.
+func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry, isArrayOrMapElement bool) (*OpenAPIV3SchemaRef, RawExample) {
 	var title string
 	var maximum float64
 	var minimum float64
@@ -1501,7 +1546,8 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 	var readOnly bool
 	var deprecated bool
 	var extensions OpenAPIV3Extensions = OpenAPIV3Extensions{}
-	var example RawExample
+	var fieldExample RawExample
+	var arrayExample RawExample
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
 	}
@@ -1522,7 +1568,11 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			multipleOf = fieldExtension.MultipleOf
 			description = fieldExtension.Description
 			readOnly = fieldExtension.ReadOnly
-			example = RawExample(fieldExtension.Example)
+			if isArrayOrMapElement {
+				arrayExample = RawExample(fieldExtension.Example)
+			} else {
+				fieldExample = RawExample(fieldExtension.Example)
+			}
 		}
 	}
 	if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BOOL {
@@ -1531,9 +1581,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Title:               title,
 			Description:         description,
 			Deprecated:          deprecated,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_DOUBLE {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "number",
@@ -1547,9 +1597,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT32 {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
@@ -1563,9 +1613,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
@@ -1579,9 +1629,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_FLOAT {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "number",
@@ -1595,9 +1645,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT32 {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
@@ -1611,9 +1661,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
@@ -1627,9 +1677,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
@@ -1640,9 +1690,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			MaxLength:           maxLength,
 			MinLength:           minLength,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BYTES {
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
@@ -1653,11 +1703,11 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			MaxLength:           maxLength,
 			MinLength:           minLength,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
-		}}
+		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
-		return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}
+		return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}, arrayExample
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
 			schemaCopy := *schema // Create a copy to avoid modifying the original schema
@@ -1674,8 +1724,8 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			schemaCopy.MaxLength = maxLength
 			schemaCopy.MinLength = minLength
 			schemaCopy.OpenAPIV3Extensions = extensions
-			schemaCopy.Example = example
-			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}
+			schemaCopy.Example = fieldExample
+			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}, arrayExample
 		} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
 			schema := &OpenAPIV3Schema{
 				Type:       "object",
@@ -1684,29 +1734,30 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			fieldMessage, err := registry.LookupMsg(*field.TypeName, *field.TypeName)
 			if err != nil || fieldMessage == nil {
 				log.Printf("Warning: could not lookup message for field %s: %v", *field.Name, err)
-				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: schema}
+				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: schema}, arrayExample
 			}
 			opts := fieldMessage.GetOptions()
 			if opts != nil && opts.MapEntry != nil && *opts.MapEntry {
 				if len(fieldMessage.Fields) != 2 {
 					log.Printf("Warning: map field %s does not have exactly 2 fields", *field.Name)
-					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}
+					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 				}
 				valueField := fieldMessage.Fields[1]
 				if valueField == nil {
 					log.Printf("Warning: could not find key/value fields for map field %s", *field.Name)
-					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}
+					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 				}
+				additionalProperties, mapExample := buildPropertySchemaFromFieldType(valueField, schemaMap, resolvedNames, registry, true)
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
-					AdditionalProperties: buildPropertySchemaFromFieldType(valueField, schemaMap, resolvedNames, registry),
+					AdditionalProperties: additionalProperties,
 					Title:                title,
 					Description:          description,
 					Deprecated:           deprecated,
 					ReadOnly:             readOnly,
-					Example:              example,
+					Example:              mapExample,
 					OpenAPIV3Extensions:  extensions,
-				}}
+				}}, arrayExample
 			}
 			schemaRef := schemaMap[*field.TypeName]
 			if schemaRef != nil {
@@ -1714,10 +1765,10 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			} else {
 				log.Printf("Warning: could not find schema for message %s", *field.TypeName)
 			}
-			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: schema}
+			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: schema}, arrayExample
 		}
 	}
-	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}
+	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}, arrayExample
 }
 
 func getFieldVisibilityOption(fd *descriptor.Field) *visibility.VisibilityRule {
