@@ -1,10 +1,12 @@
 package genopenapi
 
 import (
+	"encoding/json"
 	"fmt"
 	"log"
 	"maps"
 	"sort"
+	"strconv"
 	"strings"
 
 	"slices"
@@ -101,6 +103,27 @@ var wellKnownTypesToOpenAPIV3SchemaMapping = map[string]*OpenAPIV3Schema{
 	".google.protobuf.Any": {
 		Type: "object",
 	},
+}
+
+func openapiTypeCategory(schema *OpenAPIV3Schema) string {
+	if schema.Type == "string" {
+		return "string"
+	} else if schema.Format == "float" {
+		return "float"
+	} else if schema.Format == "double" {
+		return "double"
+	} else if schema.Format == "uint64" {
+		return "integer"
+	} else if schema.Format == "int64" {
+		return "integer"
+	} else if schema.Type == "integer" {
+		return "integer"
+	} else if schema.Type == "boolean" {
+		return "boolean"
+	} else {
+		return "object"
+	}
+
 }
 
 func applyTemplateV3(param param) (OpenAPIV3Document, error) {
@@ -1249,7 +1272,7 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 	}
 
 	if field.Label != nil && *field.Label == descriptorpb.FieldDescriptorProto_LABEL_REPEATED && (opts == nil || opts.MapEntry == nil || !*opts.MapEntry) {
-		itemSchema, example := buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames, true)
+		itemSchema, example := buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames)
 
 		schema := &OpenAPIV3Schema{
 			Type:  "array",
@@ -1262,11 +1285,11 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 			OpenAPIV3Schema: schema,
 		}
 	}
-	propertySchema, _ := buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames, false)
+	propertySchema, _ := buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames)
 	return propertySchema
 }
 
-func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, registry *descriptor.Registry, resolvedNames map[string]string, isArrayOrMapElement bool) (*OpenAPIV3SchemaRef, RawExample) {
+func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, registry *descriptor.Registry, resolvedNames map[string]string) (*OpenAPIV3SchemaRef, RawExample) {
 	var title string
 	var maximum float64
 	var minimum float64
@@ -1279,8 +1302,10 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	var description string
 	var readOnly bool
 	var deprecated bool
-	var arrayExample RawExample
-	var fieldExample RawExample
+	var arrayExample RawExample = nil
+	var fieldExample RawExample = nil
+	var jsonExample string
+	var rawExample RawExample = nil
 	var extensions OpenAPIV3Extensions
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
@@ -1305,14 +1330,24 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			multipleOf = fieldExtension.MultipleOf
 			description = fieldExtension.Description
 			readOnly = fieldExtension.ReadOnly
-			if isArrayOrMapElement {
-				arrayExample = RawExample(fieldExtension.Example)
-			} else {
-				fieldExample = RawExample(fieldExtension.Example)
-			}
+			jsonExample = fieldExtension.Example
 		}
 	}
+	isArrayOrMapElement := false
+	if jsonExample != "" {
+		isArrayOrMapElement = jsonExample[0:1] == "[" || jsonExample[0:1] == "{"
+		rawExample = RawExample(jsonExample)
+	}
 	if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BOOL {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "boolean")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "boolean",
 			Title:               title,
@@ -1323,6 +1358,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_DOUBLE {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "double")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "number",
 			Format:              "double",
@@ -1339,6 +1383,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_FLOAT {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "float")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "number",
 			Format:              "float",
@@ -1355,6 +1408,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT32 {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "integer")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
 			Format:              "int64",
@@ -1371,6 +1433,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
 			Format:              "int64",
@@ -1387,6 +1458,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT32 {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "integer")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
 			Format:              "int32",
@@ -1403,6 +1483,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "integer")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
 			Format:              "int64",
@@ -1419,6 +1508,18 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
+		if err == nil && constrainedExample != "\"\"" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if rawExample == nil {
+			log.Printf("DEBUG: string field %s has nil example", *field.Name)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
 			Title:               title,
@@ -1432,6 +1533,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BYTES {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
+		if err == nil && constrainedExample != "\"\"" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
 			Format:              "byte",
@@ -1445,11 +1555,28 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
+		if err == nil && constrainedExample != "\"\"" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		}
 		if field.TypeName != nil {
 			return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}, arrayExample
 		}
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
+			typeCategory := openapiTypeCategory(schema)
+			constrainedExample, err := validateAndCoerceJsonExample(jsonExample, typeCategory)
+			if err == nil && constrainedExample != "\"\"" && constrainedExample != "" {
+				rawExample = RawExample(constrainedExample)
+			}
+			if isArrayOrMapElement {
+				arrayExample = rawExample
+			} else {
+				fieldExample = rawExample
+			}
 			schemaCopy := *schema // Create a copy to avoid modifying the original schema
 			schemaCopy.Title = title
 			schemaCopy.Description = description
@@ -1485,7 +1612,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 					log.Printf("Warning: could not find key/value fields for map field %s", *field.Name)
 					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 				}
-				additionalProperties, mapExample := buildPropertySchemaWithReferencesFromFieldType(valueField, registry, resolvedNames, true)
+				additionalProperties, mapExample := buildPropertySchemaWithReferencesFromFieldType(valueField, registry, resolvedNames)
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
 					AdditionalProperties: additionalProperties,
@@ -1504,6 +1631,77 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}, arrayExample
 }
 
+// stripQuotes attempts to remove a single pair of surrounding double quotes from a string.
+func stripQuotes(s string) string {
+	if strings.HasPrefix(s, "\"") && strings.HasSuffix(s, "\"") {
+		return s[1 : len(s)-1]
+	}
+	return s
+}
+
+func validateAndCoerceJsonExample(exampleString string, targetType string) (string, error) {
+	if exampleString != "" && (exampleString[0:1] == "[" || exampleString[0:1] == "{") {
+		return exampleString, nil
+	}
+	// Remove any surrounding whitespace for clean processing
+	cleanString := strings.TrimSpace(exampleString)
+	lowerType := strings.ToLower(targetType)
+
+	if lowerType == "boolean" {
+		if _, err := strconv.ParseBool(cleanString); err == nil {
+			return cleanString, nil
+		}
+
+		stripped := stripQuotes(cleanString)
+		if _, err := strconv.ParseBool(stripped); err == nil {
+			return stripped, nil
+		}
+
+		return "", fmt.Errorf("example '%s' cannot be represented as a boolean", exampleString)
+	}
+
+	if lowerType == "integer" || lowerType == "number" || lowerType == "float" || lowerType == "double" {
+
+		parsedValueStr := cleanString
+		if _, err := strconv.ParseFloat(parsedValueStr, 64); err != nil {
+			stripped := stripQuotes(cleanString)
+			if stripped != cleanString {
+				parsedValueStr = stripped
+			} else {
+				return "", fmt.Errorf("example '%s' cannot be parsed as a number", exampleString)
+			}
+		}
+
+		parsedFloat, err := strconv.ParseFloat(parsedValueStr, 64)
+		if err != nil {
+			return "", fmt.Errorf("example '%s' cannot be parsed as a number", exampleString)
+		}
+
+		if lowerType == "integer" {
+			if parsedFloat == float64(int64(parsedFloat)) {
+				return strconv.FormatInt(int64(parsedFloat), 10), nil
+			}
+			return "", fmt.Errorf("example '%s' is a float/double, not a valid integer", exampleString)
+		}
+
+		return parsedValueStr, nil
+	}
+
+	if lowerType == "string" {
+		if strings.HasPrefix(cleanString, "\"") && strings.HasSuffix(cleanString, "\"") {
+			return cleanString, nil
+		}
+
+		marshaled, err := json.Marshal(exampleString)
+		if err != nil {
+			return "", fmt.Errorf("failed to marshal string example '%s': %w", exampleString, err)
+		}
+		return string(marshaled), nil
+	}
+
+	return exampleString, nil
+}
+
 func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
 	if !isVisible(getFieldVisibilityOption(field), registry) {
 		return nil
@@ -1517,7 +1715,7 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 		opts = fieldMessage.Options
 	}
 	if field.Label != nil && *field.Label == descriptorpb.FieldDescriptorProto_LABEL_REPEATED && (opts == nil || opts.MapEntry == nil || !*opts.MapEntry) {
-		propertySchema, example := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry, true)
+		propertySchema, example := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry)
 		schema := &OpenAPIV3Schema{
 			Type:  "array",
 			Items: propertySchema,
@@ -1529,10 +1727,10 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 			OpenAPIV3Schema: schema,
 		}
 	}
-	propertySchema, _ := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry, false)
+	propertySchema, _ := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry)
 	return propertySchema
 }
-func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry, isArrayOrMapElement bool) (*OpenAPIV3SchemaRef, RawExample) {
+func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) (*OpenAPIV3SchemaRef, RawExample) {
 	var title string
 	var maximum float64
 	var minimum float64
@@ -1546,8 +1744,10 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 	var readOnly bool
 	var deprecated bool
 	var extensions OpenAPIV3Extensions = OpenAPIV3Extensions{}
+	var jsonExample string
 	var fieldExample RawExample
 	var arrayExample RawExample
+	var rawExample RawExample
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
 	}
@@ -1568,14 +1768,26 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			multipleOf = fieldExtension.MultipleOf
 			description = fieldExtension.Description
 			readOnly = fieldExtension.ReadOnly
-			if isArrayOrMapElement {
-				arrayExample = RawExample(fieldExtension.Example)
-			} else {
-				fieldExample = RawExample(fieldExtension.Example)
-			}
+			jsonExample = fieldExtension.Example
 		}
 	}
+	isArrayOrMapElement := false
+	if jsonExample != "" {
+		isArrayOrMapElement = jsonExample[0:1] == "[" || jsonExample[0:1] == "{"
+		rawExample = RawExample(jsonExample)
+	} else {
+		rawExample = nil
+	}
 	if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BOOL {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "boolean")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "boolean",
 			Title:               title,
@@ -1585,6 +1797,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_DOUBLE {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "double")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "number",
 			Format:              "double",
@@ -1601,6 +1822,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT32 {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "integer")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
 			Format:              "int64",
@@ -1617,6 +1847,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
 			Format:              "int64",
@@ -1633,6 +1872,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_FLOAT {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "float")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "number",
 			Format:              "float",
@@ -1649,6 +1897,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT32 {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "integer")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
 			Format:              "int32",
@@ -1665,6 +1922,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "integer")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
 			Format:              "int64",
@@ -1681,6 +1947,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
 			Title:               title,
@@ -1694,6 +1969,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BYTES {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
+		if err == nil && constrainedExample != "" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
 			Format:              "byte",
@@ -1707,9 +1991,26 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
+		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
+		if err == nil && constrainedExample != "\"\"" {
+			rawExample = RawExample(constrainedExample)
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		}
 		return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}, arrayExample
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
+			typeCategory := openapiTypeCategory(schema)
+			constrainedExample, err := validateAndCoerceJsonExample(jsonExample, typeCategory)
+			if err == nil && constrainedExample != "\"\"" && constrainedExample != "" {
+				rawExample = RawExample(constrainedExample)
+			}
+			if isArrayOrMapElement {
+				arrayExample = rawExample
+			} else {
+				fieldExample = rawExample
+			}
 			schemaCopy := *schema // Create a copy to avoid modifying the original schema
 			schemaCopy.Title = title
 			schemaCopy.Description = description
@@ -1747,7 +2048,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 					log.Printf("Warning: could not find key/value fields for map field %s", *field.Name)
 					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 				}
-				additionalProperties, mapExample := buildPropertySchemaFromFieldType(valueField, schemaMap, resolvedNames, registry, true)
+				additionalProperties, mapExample := buildPropertySchemaFromFieldType(valueField, schemaMap, resolvedNames, registry)
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
 					AdditionalProperties: additionalProperties,
