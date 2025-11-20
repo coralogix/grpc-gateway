@@ -1512,9 +1512,6 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 		if err == nil && constrainedExample != "\"\"" {
 			rawExample = RawExample(constrainedExample)
 		}
-		if rawExample == nil {
-			log.Printf("DEBUG: string field %s has nil example", *field.Name)
-		}
 		if isArrayOrMapElement {
 			arrayExample = rawExample
 		} else {
