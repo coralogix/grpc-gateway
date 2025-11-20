@@ -119,3 +119,201 @@ func Test_sanitizeUrlPath(t *testing.T) {
 		})
 	}
 }
+
+func TestValidateAndCoerceJsonExample(t *testing.T) {
+	// Define a struct for our table-driven tests
+	type testCase struct {
+		name          string
+		inputString   string
+		targetType    string
+		expectedValue string
+		wantErr       bool
+	}
+
+	// Define the test table
+	tests := []testCase{
+		// --- BOOLEAN TESTS ---
+		{
+			name:          "Bool_Success_Literal_True",
+			inputString:   "true",
+			targetType:    "boolean",
+			expectedValue: "true",
+			wantErr:       false,
+		},
+		{
+			name:          "Bool_Success_Literal_False_Whitespace",
+			inputString:   " FALSE ",
+			targetType:    "boolean",
+			expectedValue: "FALSE",
+			wantErr:       false,
+		},
+		{
+			name:          "Bool_Success_Coerced_Quoted",
+			inputString:   "\"true\"",
+			targetType:    "boolean",
+			expectedValue: "true", // Stripped of quotes
+			wantErr:       false,
+		},
+		{
+			name:        "Bool_Fail_IsNumber",
+			inputString: "123",
+			targetType:  "boolean",
+			wantErr:     true,
+		},
+		{
+			name:        "Bool_Fail_IsString",
+			inputString: "Yes",
+			targetType:  "boolean",
+			wantErr:     true,
+		},
+
+		// --- INTEGER TESTS ---
+		{
+			name:          "Int_Success_Literal",
+			inputString:   "42",
+			targetType:    "integer",
+			expectedValue: "42",
+			wantErr:       false,
+		},
+		{
+			name:          "Int_Success_Coerced_Quoted",
+			inputString:   "\"12345\"",
+			targetType:    "integer",
+			expectedValue: "12345", // Stripped of quotes, but value is int
+			wantErr:       false,
+		},
+		{
+			name:          "Int_Success_Coerced_DecimalZero",
+			inputString:   "99.00",
+			targetType:    "integer",
+			expectedValue: "99", // Coerced to "99"
+			wantErr:       false,
+		},
+		{
+			name:        "Int_Fail_IsFloat",
+			inputString: "12.3",
+			targetType:  "integer",
+			wantErr:     true,
+		},
+		{
+			name:        "Int_Fail_IsString",
+			inputString: "abc",
+			targetType:  "integer",
+			wantErr:     true,
+		},
+		{
+			name:          "Int_Success_LargeNumber",
+			inputString:   "9223372036854775807", // Max int64
+			targetType:    "integer",
+			expectedValue: "9223372036854775807",
+			wantErr:       false,
+		},
+
+		// --- NUMBER/FLOAT/DOUBLE TESTS ---
+		{
+			name:          "Float_Success_Decimal",
+			inputString:   "12.34",
+			targetType:    "number",
+			expectedValue: "12.34",
+			wantErr:       false,
+		},
+		{
+			name:          "Double_Success_ScientificNotation",
+			inputString:   "1e-5",
+			targetType:    "double",
+			expectedValue: "1e-5",
+			wantErr:       false,
+		},
+		{
+			name:          "Float_Success_Coerced_Quoted",
+			inputString:   "\"-7.89\"",
+			targetType:    "float",
+			expectedValue: "-7.89",
+			wantErr:       false,
+		},
+		{
+			name:          "Number_Success_IntegerInput",
+			inputString:   "100",
+			targetType:    "number",
+			expectedValue: "100",
+			wantErr:       false,
+		},
+		{
+			name:        "Number_Fail_IsString",
+			inputString: "not-a-num",
+			targetType:  "number",
+			wantErr:     true,
+		},
+		{
+			name:        "Double_Fail_QuotedString",
+			inputString: "\"not-a-num\"",
+			targetType:  "double",
+			wantErr:     true,
+		},
+
+		// --- STRING TESTS ---
+		{
+			name:          "String_Success_AlreadyQuoted",
+			inputString:   "\"hello world\"",
+			targetType:    "string",
+			expectedValue: "\"hello world\"",
+			wantErr:       false,
+		},
+		{
+			name:          "String_Coerced_PlainText",
+			inputString:   "plain text",
+			targetType:    "string",
+			expectedValue: "\"plain text\"", // Stringified
+			wantErr:       false,
+		},
+		{
+			name:          "String_Coerced_WithInternalQuotes",
+			inputString:   "Example with \"internal\" quotes",
+			targetType:    "string",
+			expectedValue: "\"Example with \\\"internal\\\" quotes\"", // Stringified and escaped
+			wantErr:       false,
+		},
+		{
+			name:          "String_Coerced_BooleanLike",
+			inputString:   "true",
+			targetType:    "string",
+			expectedValue: "\"true\"", // Stringified
+			wantErr:       false,
+		},
+		{
+			name:          "String_Coerced_NumberLike",
+			inputString:   "123",
+			targetType:    "string",
+			expectedValue: "\"123\"", // Stringified
+			wantErr:       false,
+		},
+
+		// --- EDGE CASE: Unknown Type ---
+		{
+			name:          "Edge_UnknownType_ReturnOriginal",
+			inputString:   "someValue",
+			targetType:    "unsupported",
+			expectedValue: "someValue",
+			wantErr:       false,
+		},
+	}
+
+	// Iterate over the test table
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			actual, err := validateAndCoerceJsonExample(tc.inputString, tc.targetType)
+
+			// Check for expected error state
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateAndCoerceJsonExample(%q, %q) error state mismatch.\nExpected error: %v, Got error: %v",
+					tc.inputString, tc.targetType, tc.wantErr, err)
+			}
+
+			// Check for expected value only if no error was expected
+			if !tc.wantErr && actual != tc.expectedValue {
+				t.Errorf("ValidateAndCoerceJsonExample(%q, %q) failed.\nExpected: %q\nActual:   %q",
+					tc.inputString, tc.targetType, tc.expectedValue, actual)
+			}
+		})
+	}
+}
