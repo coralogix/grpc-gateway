@@ -416,6 +416,14 @@ message ExternalDocumentation {
   string url = 2;
 }
 
+message Discriminator {
+  // The name of the property in the payload that will hold the discriminator
+  // value.
+  string property_name = 1;
+  // Mapping from payload values to the schema names or references.
+  map<string, string> mapping = 2;
+}
+
 // `Schema` is a representation of OpenAPI v2 specification's Schema object.
 //
 // See: https://github.com/OAI/OpenAPI-Specification/blob/3.0.0/versions/2.0.md#schemaObject
@@ -427,7 +435,7 @@ message Schema {
   // schema. The property name used MUST be defined at this schema and it MUST
   // be in the required property list. When used, the value MUST be the name of
   // this schema or any schema that inherits it.
-  string discriminator = 2;
+  Discriminator discriminator = 2;
   // Relevant only for Schema "properties" definitions. Declares the property as
   // "read only". This means that it MAY be sent as part of a response but MUST
   // NOT be sent as part of the request. Properties marked as readOnly being
@@ -442,6 +450,9 @@ message Schema {
   // This is copied verbatim to the output.
   string example = 6;
 }
+
+
+
 
 // `EnumSchema` is subset of fields from the OpenAPI v2 specification's Schema object.
 // Only fields that are applicable to Enums are included

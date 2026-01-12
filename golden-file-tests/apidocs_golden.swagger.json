@@ -17,10 +17,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "$ref": "#/components/schemas/CreateThingRequestVariantA"
+                    "$ref": "#/components/schemas/CreateThingRequestVariantB"
                   },
                   {
-                    "$ref": "#/components/schemas/CreateThingRequestVariantB"
+                    "$ref": "#/components/schemas/CreateThingRequestVariantA"
                   }
                 ],
                 "type": "object"
@@ -137,6 +137,7 @@
             "name": "filter",
             "required": false,
             "schema": {
+              "example": "",
               "type": "string"
             }
           },
@@ -154,6 +155,7 @@
             "name": "page_token",
             "required": false,
             "schema": {
+              "example": "",
               "type": "string"
             }
           }
@@ -216,10 +218,10 @@
               "schema": {
                 "oneOf": [
                   {
-                    "$ref": "#/components/schemas/ThingVariantA"
+                    "$ref": "#/components/schemas/ThingVariantB"
                   },
                   {
-                    "$ref": "#/components/schemas/ThingVariantB"
+                    "$ref": "#/components/schemas/ThingVariantA"
                   }
                 ],
                 "type": "object"
@@ -702,7 +704,14 @@
           {
             "$ref": "#/components/schemas/ThingVariantB"
           }
-        ]
+        ],
+        "discriminator": {
+          "propertyName": "thing_type",
+          "mapping": {
+            "THING_TYPE_PREMIUM": "#/components/schemas/Thing",
+            "THING_TYPE_STANDARD": "#/components/schemas/Thing"
+          }
+        }
       },
       "ThingType": {
         "title": "ThingType",
@@ -740,7 +749,10 @@
             "$ref": "#/components/schemas/PolymorphicVariantA"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "externalDocs": {
+          "url": ""
+        }
       },
       "ThingVariantB": {
         "type": "object",
@@ -768,7 +780,10 @@
             "$ref": "#/components/schemas/PolymorphicVariantB"
           }
         },
-        "additionalProperties": false
+        "additionalProperties": false,
+        "externalDocs": {
+          "url": ""
+        }
       }
     }
   },

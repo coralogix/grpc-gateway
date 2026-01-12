@@ -994,6 +994,7 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 	var description string
 	var externalDocs *OpenAPIV3ExternalDocs
 	var extensions OpenAPIV3Extensions
+	var discriminator *OpenAPIV3Discriminator
 	oneofGroups := make(map[string][]*descriptor.Field)
 	if proto.HasExtension(message.Options, options.E_Openapiv3Schema) {
 		schemaExtension, ok := proto.GetExtension(message.Options, options.E_Openapiv3Schema).(*options.Schema)
@@ -1003,6 +1004,12 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 			externalDocs = &OpenAPIV3ExternalDocs{
 				Description: schemaExtension.GetExternalDocs().GetDescription(),
 				URL:         schemaExtension.GetExternalDocs().GetUrl(),
+			}
+			if schemaExtension.Discriminator != nil {
+				discriminator = &OpenAPIV3Discriminator{
+					PropertyName: schemaExtension.GetDiscriminator().GetPropertyName(),
+					Mapping:      schemaExtension.GetDiscriminator().GetMapping(),
+				}
 			}
 			for k, v := range schemaExtension.GetJsonSchema().GetExtensions() {
 				if extensions == nil {
@@ -1053,7 +1060,8 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 	}
 
 	return &OpenAPIV3Schema{
-		OneOf: oneOfSchemas,
+		OneOf:         oneOfSchemas,
+		Discriminator: discriminator,
 	}
 }
 
@@ -1064,6 +1072,7 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 	var description string
 	var externalDocs *OpenAPIV3ExternalDocs
 	var extensions OpenAPIV3Extensions
+	var discriminator *OpenAPIV3Discriminator
 	var requiredFields []string
 
 	if proto.HasExtension(message.Options, options.E_Openapiv3Schema) {
@@ -1071,6 +1080,12 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		if ok && schemaExtension != nil {
 			title = schemaExtension.GetJsonSchema().GetTitle()
 			description = schemaExtension.GetJsonSchema().GetDescription()
+			if schemaExtension.Discriminator != nil {
+				discriminator = &OpenAPIV3Discriminator{
+					PropertyName: schemaExtension.GetDiscriminator().GetPropertyName(),
+					Mapping:      schemaExtension.GetDiscriminator().GetMapping(),
+				}
+			}
 			for k, v := range schemaExtension.GetJsonSchema().GetExtensions() {
 				if extensions == nil {
 					extensions = make(OpenAPIV3Extensions)
@@ -1141,7 +1156,8 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 	}
 
 	return &OpenAPIV3Schema{
-		OneOf: oneOfSchemaRefs,
+		OneOf:         oneOfSchemaRefs,
+		Discriminator: discriminator,
 	}, oneOfSchemas
 }
 

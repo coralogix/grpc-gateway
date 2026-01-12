@@ -9,6 +9,19 @@ import "protoc-gen-openapiv3/options/annotations.proto";
 
 // Thing is a thing.
 message Thing {
+  option (grpc.gateway.protoc_gen_openapiv3.options.openapiv3_schema) = {
+    discriminator: {
+      property_name: "thing_type"
+      mapping: {
+        key: "THING_TYPE_STANDARD"
+        value: "#/components/schemas/Thing"
+      },
+      mapping: {
+        key: "THING_TYPE_PREMIUM"
+        value: "#/components/schemas/Thing"
+      }
+    }
+  };
   // ID is the unique identifier of the thing.
   string id = 1 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {example: "\"123e4567-e89b-12d3-a456-426614174000\""}];
 
