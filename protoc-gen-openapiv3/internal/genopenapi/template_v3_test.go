@@ -120,6 +120,48 @@ func Test_sanitizeUrlPath(t *testing.T) {
 	}
 }
 
+func TestApplyPathParamRenames(t *testing.T) {
+	tests := []struct {
+		name     string
+		path     string
+		renames  map[string]string
+		expected string
+	}{
+		{
+			name:     "No renames",
+			path:     "/v1/shelves/{shelf_id}",
+			renames:  map[string]string{},
+			expected: "/v1/shelves/{shelf_id}",
+		},
+		{
+			name:     "Single path param renamed",
+			path:     "/v1/shelves/{shelf_id}",
+			renames:  map[string]string{"{shelf_id}": "{shelfName}"},
+			expected: "/v1/shelves/{shelfName}",
+		},
+		{
+			name:     "Path param renamed for spectral equivalence",
+			path:     "/integrations/contextual-data/v1/{integration_id}",
+			renames:  map[string]string{"{integration_id}": "{id}"},
+			expected: "/integrations/contextual-data/v1/{id}",
+		},
+		{
+			name:     "Multiple path params renamed",
+			path:     "/v1/publishers/{publisher_id}/books/{book_id}",
+			renames:  map[string]string{"{publisher_id}": "{publisherId}", "{book_id}": "{bookId}"},
+			expected: "/v1/publishers/{publisherId}/books/{bookId}",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			actual := applyPathParamRenames(tt.path, tt.renames)
+			if actual != tt.expected {
+				t.Errorf("applyPathParamRenames(%q, %v) = %q; want %q", tt.path, tt.renames, actual, tt.expected)
+			}
+		})
+	}
+}
+
 func TestValidateAndCoerceJsonExample(t *testing.T) {
 	// Define a struct for our table-driven tests
 	type testCase struct {
