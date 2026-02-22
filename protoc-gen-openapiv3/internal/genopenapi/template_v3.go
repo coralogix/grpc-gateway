@@ -338,26 +338,20 @@ func sanitizeURLPath(urlPath string) string {
 	return strings.Join(sanitizedSegments, "/")
 }
 
-// buildPathParamRenames returns a map from original path placeholder (e.g. "{integration_id}") to
-// renamed placeholder (e.g. "{id}") for path params that have field_configuration.path_param_name set.
 func buildPathParamRenames(binding *descriptor.Binding, registry *descriptor.Registry) map[string]string {
 	renames := make(map[string]string)
 	for _, param := range binding.PathParams {
 		paramName := param.FieldPath[len(param.FieldPath)-1].Target.Name
 		field := param.Target
 		if fc := getFieldConfiguration(registry, field); fc != nil {
-			if name := fc.GetPathParamName(); name != "" {
-				pathParamName, _, _ := strings.Cut(name, "=")
-				if pathParamName != *paramName {
-					renames["{"+*paramName+"}"] = "{" + pathParamName + "}"
-				}
+			if name := fc.GetPathParamName(); name != "" && name != *paramName {
+				renames["{"+*paramName+"}"] = "{" + name + "}"
 			}
 		}
 	}
 	return renames
 }
 
-// applyPathParamRenames replaces path parameter placeholders in path according to renames map.
 func applyPathParamRenames(path string, renames map[string]string) string {
 	for original, renamed := range renames {
 		path = strings.ReplaceAll(path, original, renamed)
@@ -496,8 +490,7 @@ func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Regis
 		pathParamName := *paramName
 		if fc := getFieldConfiguration(registry, field); fc != nil {
 			if name := fc.GetPathParamName(); name != "" {
-				// path_param_name may contain "=" for constraints (e.g. "id=*"); use only the name part
-				pathParamName, _, _ = strings.Cut(name, "=")
+				pathParamName = name
 			}
 		}
 		fieldOpenApiV3Schema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
@@ -2199,7 +2192,13 @@ func isVisible(r *visibility.VisibilityRule, reg *descriptor.Registry) bool {
 	return false
 }
 
-// getFieldOpenAPIOption returns the OpenAPI v3 JSONSchema option for a field from the proto extension or registry.
+func getFieldConfiguration(reg *descriptor.Registry, fd *descriptor.Field) *options.JSONSchema_FieldConfiguration {
+	if j, err := getFieldOpenAPIOption(reg, fd); err == nil && j != nil {
+		return j.GetFieldConfiguration()
+	}
+	return nil
+}
+
 func getFieldOpenAPIOption(reg *descriptor.Registry, fd *descriptor.Field) (*options.JSONSchema, error) {
 	if fd.Options != nil && proto.HasExtension(fd.Options, options.E_Openapiv3Field) {
 		ext := proto.GetExtension(fd.Options, options.E_Openapiv3Field)
@@ -2214,12 +2213,4 @@ func getFieldOpenAPIOption(reg *descriptor.Registry, fd *descriptor.Field) (*opt
 		return nil, nil
 	}
 	return opts, nil
-}
-
-// getFieldConfiguration returns the field configuration (e.g. path_param_name) for OpenAPI v3 output.
-func getFieldConfiguration(reg *descriptor.Registry, fd *descriptor.Field) *options.JSONSchema_FieldConfiguration {
-	if j, err := getFieldOpenAPIOption(reg, fd); err == nil && j != nil {
-		return j.GetFieldConfiguration()
-	}
-	return nil
 }
