@@ -249,7 +249,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 						}
 					}
 				}
-				path := sanitizeURLPath(b.PathTmpl.Template)
+				path := applyPathParamRenames(sanitizeURLPath(b.PathTmpl.Template), buildPathParamRenames(b, param.reg))
 
 				// Ensure the path item exists
 				pathItem, ok := paths[path]
@@ -336,6 +336,27 @@ func sanitizeURLPath(urlPath string) string {
 		}
 	}
 	return strings.Join(sanitizedSegments, "/")
+}
+
+func buildPathParamRenames(binding *descriptor.Binding, registry *descriptor.Registry) map[string]string {
+	renames := make(map[string]string)
+	for _, param := range binding.PathParams {
+		paramName := param.FieldPath[len(param.FieldPath)-1].Target.Name
+		field := param.Target
+		if fc := getFieldConfiguration(registry, field); fc != nil {
+			if name := fc.GetPathParamName(); name != "" && name != *paramName {
+				renames["{"+*paramName+"}"] = "{" + name + "}"
+			}
+		}
+	}
+	return renames
+}
+
+func applyPathParamRenames(path string, renames map[string]string) string {
+	for original, renamed := range renames {
+		path = strings.ReplaceAll(path, original, renamed)
+	}
+	return path
 }
 
 func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) OpenAPIV3Responses {
@@ -466,11 +487,17 @@ func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Regis
 		if !isVisible(getFieldVisibilityOption(field), registry) {
 			continue
 		}
+		pathParamName := *paramName
+		if fc := getFieldConfiguration(registry, field); fc != nil {
+			if name := fc.GetPathParamName(); name != "" {
+				pathParamName = name
+			}
+		}
 		fieldOpenApiV3Schema := buildPropertySchemaWithReferencesFromField(field, registry, resolvedNames)
 		if fieldOpenApiV3Schema != nil {
 			parameterRef := OpenAPIV3ParameterRef{
 				OpenAPIV3Parameter: &OpenAPIV3Parameter{
-					Name:     *paramName,
+					Name:     pathParamName,
 					In:       "path",
 					Required: true,
 					Schema:   fieldOpenApiV3Schema,
@@ -2163,4 +2190,27 @@ func isVisible(r *visibility.VisibilityRule, reg *descriptor.Registry) bool {
 	}
 
 	return false
+}
+
+func getFieldConfiguration(reg *descriptor.Registry, fd *descriptor.Field) *options.JSONSchema_FieldConfiguration {
+	if j, err := getFieldOpenAPIOption(reg, fd); err == nil && j != nil {
+		return j.GetFieldConfiguration()
+	}
+	return nil
+}
+
+func getFieldOpenAPIOption(reg *descriptor.Registry, fd *descriptor.Field) (*options.JSONSchema, error) {
+	if fd.Options != nil && proto.HasExtension(fd.Options, options.E_Openapiv3Field) {
+		ext := proto.GetExtension(fd.Options, options.E_Openapiv3Field)
+		opts, ok := ext.(*options.JSONSchema)
+		if !ok {
+			return nil, fmt.Errorf("extension is %T; want a JSONSchema object", ext)
+		}
+		return opts, nil
+	}
+	opts, ok := reg.GetOpenAPIFieldOptionv3(fd.FQFN())
+	if !ok {
+		return nil, nil
+	}
+	return opts, nil
 }
