@@ -699,6 +699,7 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			}
 		}
 	}
+	applyInferredDiscriminatorFields(oneOfSchemas)
 	oneOfSchemaRefs := []*OpenAPIV3SchemaRef{}
 	for combinationName := range oneOfSchemas {
 		schemaRef := OpenAPIV3SchemaRef{
@@ -1167,6 +1168,7 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 			OpenAPIV3Schema: schema,
 		}
 	}
+	applyInferredDiscriminatorFields(oneOfSchemas)
 
 	if len(oneOfSchemas) == 1 {
 		for _, schema := range oneOfSchemas {
@@ -1235,6 +1237,143 @@ func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messa
 	}
 
 	return namedCombinations
+}
+
+func applyInferredDiscriminatorFields(oneOfSchemas map[string]*OpenAPIV3SchemaRef) {
+	discriminatorFieldsBySchema, ok := inferDiscriminatorFields(oneOfSchemas)
+	if !ok {
+		return
+	}
+	for schemaName, discriminatorFields := range discriminatorFieldsBySchema {
+		schemaRef := oneOfSchemas[schemaName]
+		if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil {
+			continue
+		}
+		schemaRef.Required = mergeRequiredFields(schemaRef.Required, discriminatorFields)
+	}
+}
+
+func inferDiscriminatorFields(oneOfSchemas map[string]*OpenAPIV3SchemaRef) (map[string][]string, bool) {
+	if len(oneOfSchemas) <= 1 {
+		return map[string][]string{}, true
+	}
+
+	schemaNames := make([]string, 0, len(oneOfSchemas))
+	propertySets := make(map[string][]string, len(oneOfSchemas))
+	for schemaName, schemaRef := range oneOfSchemas {
+		schemaNames = append(schemaNames, schemaName)
+		if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil {
+			continue
+		}
+
+		properties := make([]string, 0, len(schemaRef.Properties))
+		for propertyName := range schemaRef.Properties {
+			properties = append(properties, propertyName)
+		}
+		sort.Strings(properties)
+		propertySets[schemaName] = properties
+	}
+	sort.Strings(schemaNames)
+
+	discriminatorFieldsBySchema := make(map[string][]string, len(oneOfSchemas))
+	for _, schemaName := range schemaNames {
+		discriminatorFields := minimalUniqueFieldSet(schemaName, propertySets)
+		if len(discriminatorFields) == 0 {
+			log.Printf("Warning: unable to infer discriminator fields for cartesian oneOf branch %q; sibling property sets: %v", schemaName, propertySets)
+			return nil, false
+		}
+		discriminatorFieldsBySchema[schemaName] = discriminatorFields
+	}
+
+	return discriminatorFieldsBySchema, true
+}
+
+func minimalUniqueFieldSet(targetSchema string, propertySets map[string][]string) []string {
+	targetProperties := propertySets[targetSchema]
+	if len(targetProperties) == 0 {
+		return nil
+	}
+
+	for subsetSize := 1; subsetSize <= len(targetProperties); subsetSize++ {
+		for _, subset := range combinationsOfStrings(targetProperties, subsetSize) {
+			isUnique := true
+			for schemaName, properties := range propertySets {
+				if schemaName == targetSchema {
+					continue
+				}
+				if containsAllStrings(properties, subset) {
+					isUnique = false
+					break
+				}
+			}
+			if isUnique {
+				return subset
+			}
+		}
+	}
+
+	return nil
+}
+
+func combinationsOfStrings(values []string, size int) [][]string {
+	if size <= 0 || size > len(values) {
+		return nil
+	}
+
+	var results [][]string
+	var current []string
+	var visit func(start int)
+	visit = func(start int) {
+		if len(current) == size {
+			results = append(results, slices.Clone(current))
+			return
+		}
+		for index := start; index <= len(values)-(size-len(current)); index++ {
+			current = append(current, values[index])
+			visit(index + 1)
+			current = current[:len(current)-1]
+		}
+	}
+	visit(0)
+
+	return results
+}
+
+func containsAllStrings(values []string, subset []string) bool {
+	valueSet := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		valueSet[value] = struct{}{}
+	}
+	for _, value := range subset {
+		if _, ok := valueSet[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeRequiredFields(existing []string, additions []string) []string {
+	if len(additions) == 0 {
+		return existing
+	}
+
+	merged := make([]string, 0, len(existing)+len(additions))
+	seen := make(map[string]struct{}, len(existing)+len(additions))
+	for _, field := range existing {
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		merged = append(merged, field)
+	}
+	for _, field := range additions {
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		merged = append(merged, field)
+	}
+	return merged
 }
 
 // Helper function to build a single OpenAPI schema from a list of fields.

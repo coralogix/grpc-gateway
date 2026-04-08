@@ -2,6 +2,7 @@ package genopenapi
 
 import (
 	"log"
+	"slices"
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
@@ -46,6 +47,89 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 		}
 
 	})
+}
+
+func TestApplyInferredDiscriminatorFields(t *testing.T) {
+	t.Run("single unique field", func(t *testing.T) {
+		schemas := map[string]*OpenAPIV3SchemaRef{
+			"LogRulesVariant": {
+				OpenAPIV3Schema: &OpenAPIV3Schema{
+					Properties: map[string]*OpenAPIV3SchemaRef{
+						"name":     {},
+						"priority": {},
+						"logRules": {},
+					},
+					Required: []string{"name", "priority"},
+				},
+			},
+			"SpanRulesVariant": {
+				OpenAPIV3Schema: &OpenAPIV3Schema{
+					Properties: map[string]*OpenAPIV3SchemaRef{
+						"name":      {},
+						"priority":  {},
+						"spanRules": {},
+					},
+					Required: []string{"name", "priority"},
+				},
+			},
+		}
+
+		applyInferredDiscriminatorFields(schemas)
+
+		if got := schemas["LogRulesVariant"].Required; !slices.Equal(got, []string{"name", "priority", "logRules"}) {
+			t.Fatalf("LogRulesVariant required fields = %v, want %v", got, []string{"name", "priority", "logRules"})
+		}
+		if got := schemas["SpanRulesVariant"].Required; !slices.Equal(got, []string{"name", "priority", "spanRules"}) {
+			t.Fatalf("SpanRulesVariant required fields = %v, want %v", got, []string{"name", "priority", "spanRules"})
+		}
+	})
+
+	t.Run("combo-only discriminator", func(t *testing.T) {
+		schemas := map[string]*OpenAPIV3SchemaRef{
+			"AlphaXray":   {OpenAPIV3Schema: schemaWithProperties("common", "alpha", "xray")},
+			"AlphaYankee": {OpenAPIV3Schema: schemaWithProperties("common", "alpha", "yankee")},
+			"BetaXray":    {OpenAPIV3Schema: schemaWithProperties("common", "beta", "xray")},
+			"BetaYankee":  {OpenAPIV3Schema: schemaWithProperties("common", "beta", "yankee")},
+		}
+
+		applyInferredDiscriminatorFields(schemas)
+
+		assertRequiredFields(t, schemas["AlphaXray"].Required, []string{"alpha", "xray"})
+		assertRequiredFields(t, schemas["AlphaYankee"].Required, []string{"alpha", "yankee"})
+		assertRequiredFields(t, schemas["BetaXray"].Required, []string{"beta", "xray"})
+		assertRequiredFields(t, schemas["BetaYankee"].Required, []string{"beta", "yankee"})
+	})
+
+	t.Run("impossible discriminator leaves schemas unchanged", func(t *testing.T) {
+		schemas := map[string]*OpenAPIV3SchemaRef{
+			"Left":  {OpenAPIV3Schema: schemaWithProperties("common", "value")},
+			"Right": {OpenAPIV3Schema: schemaWithProperties("common", "value")},
+		}
+
+		applyInferredDiscriminatorFields(schemas)
+
+		if len(schemas["Left"].Required) != 0 {
+			t.Fatalf("Left required fields = %v, want unchanged empty slice", schemas["Left"].Required)
+		}
+		if len(schemas["Right"].Required) != 0 {
+			t.Fatalf("Right required fields = %v, want unchanged empty slice", schemas["Right"].Required)
+		}
+	})
+}
+
+func schemaWithProperties(propertyNames ...string) *OpenAPIV3Schema {
+	properties := make(map[string]*OpenAPIV3SchemaRef, len(propertyNames))
+	for _, propertyName := range propertyNames {
+		properties[propertyName] = &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{}}
+	}
+	return &OpenAPIV3Schema{Properties: properties}
+}
+
+func assertRequiredFields(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Fatalf("required fields = %v, want %v", got, want)
+	}
 }
 
 func Test_sanitizeUrlPath(t *testing.T) {
