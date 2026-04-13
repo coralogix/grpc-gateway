@@ -686,13 +686,12 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 		}
 		if len(bodyProperties) > 0 {
 			schema := OpenAPIV3Schema{
-				Type:                 "object",
-				Properties:           bodyProperties,
-				Required:             bodyRepresentation.requiredFields,
-				Title:                bodyRepresentation.title,
-				Description:          bodyRepresentation.description,
-				AdditionalProperties: false,
-				OpenAPIV3Extensions:  bodyRepresentation.extensions,
+				Type:                "object",
+				Properties:          bodyProperties,
+				Required:            bodyRepresentation.requiredFields,
+				Title:               bodyRepresentation.title,
+				Description:         bodyRepresentation.description,
+				OpenAPIV3Extensions: bodyRepresentation.extensions,
 			}
 			oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
 				OpenAPIV3Schema: &schema,
@@ -1161,9 +1160,6 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		}
 		allSchemaFields := append(fieldsNotPartOfOneofGroup, combinationFields...)
 		schema := buildSchemaFromFieldsWithReferences(allSchemaFields, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
-		if schema.AdditionalProperties == nil {
-			schema.AdditionalProperties = false
-		}
 		oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
