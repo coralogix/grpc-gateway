@@ -618,7 +618,7 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 		return nil, map[string]*OpenAPIV3SchemaRef{}
 	}
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
-	bodyRepresentation := extractRequestBodyFieldCombinations(binding, registry)
+	bodyRepresentation := extractRequestBodyFieldCombinations(binding, registry, resolvedNames)
 	parameterFields := extractParameterFields(binding)
 	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
 	for combinationName, bodyFields := range bodyRepresentation.fieldCombinations {
@@ -748,7 +748,7 @@ type openAPIV3BodyRepresentation struct {
 	externaDocs       *OpenAPIV3ExternalDocs
 }
 
-func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *descriptor.Registry) openAPIV3BodyRepresentation {
+func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *descriptor.Registry, resolvedNames map[string]string) openAPIV3BodyRepresentation {
 	var fieldMessage *descriptor.Message
 	bodyFields := []protoField{}
 	prefix := []string{}
@@ -842,7 +842,7 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		}
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, *fieldMessage.Name)
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, *fieldMessage.Name, resolvedNames)
 	protoFields := make(map[string][]protoField)
 	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
 		fields := make([]protoField, 0, len(combination)+len(fieldsNotPartOfOneofGroup))
@@ -1072,7 +1072,7 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 		return buildSchemaFromFieldsWithReferences(fieldsNotPartOfOneofGroup, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, resolvedNames[message.FQMN()])
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, resolvedNames[message.FQMN()], resolvedNames)
 
 	oneOfSchemas := []*OpenAPIV3SchemaRef{}
 	for combinationName := range combinationsOfFieldsPartOfOneofGroups {
@@ -1150,7 +1150,7 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		return buildSchemaFromFields(fieldsNotPartOfOneofGroup, schemaMap, requiredFields, title, description, externalDocs, extensions, resolvedNames, registry), map[string]*OpenAPIV3SchemaRef{}
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, resolvedNames[message.FQMN()])
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, resolvedNames[message.FQMN()], resolvedNames)
 
 	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
 	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
@@ -1187,6 +1187,10 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 }
 
 func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messageName string) map[string]map[string]*descriptor.Field {
+	return generateOneOfCombinationsWithResolvedNames(oneofGroups, messageName, nil)
+}
+
+func generateOneOfCombinationsWithResolvedNames(oneofGroups map[string][]*descriptor.Field, messageName string, resolvedNames map[string]string) map[string]map[string]*descriptor.Field {
 	allCombinations := []map[string]*descriptor.Field{{}}
 
 	oneofGroupNames := make([]string, 0, len(oneofGroups))
@@ -1212,6 +1216,12 @@ func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messa
 		allCombinations = newCombinations
 	}
 
+	// Build a set of existing type names for collision detection
+	existingTypeNames := make(map[string]struct{})
+	for _, name := range resolvedNames {
+		existingTypeNames[name] = struct{}{}
+	}
+
 	namedCombinations := make(map[string]map[string]*descriptor.Field, len(allCombinations))
 
 	for _, combination := range allCombinations {
@@ -1229,6 +1239,12 @@ func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messa
 		combinationName := strings.Join(keyParts, "_")
 		combinationName = messageName + "_" + combinationName
 		combinationName = toPascalCase(combinationName)
+
+		// Check for collision with existing type names and add suffix if needed
+		if _, exists := existingTypeNames[combinationName]; exists {
+			combinationName = combinationName + "Variant"
+		}
+
 		namedCombinations[combinationName] = combination
 	}
 

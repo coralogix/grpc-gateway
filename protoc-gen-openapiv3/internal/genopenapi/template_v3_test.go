@@ -47,6 +47,160 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 		}
 
 	})
+
+	t.Run("CollisionWithExistingTypeName", func(t *testing.T) {
+		// This tests the scenario where a oneOf field name + message name creates a collision
+		// with an existing type name.
+		// E.g., message ColorsBy with field ColorsByAggregation aggregation would generate
+		// "ColorsByAggregation" as the combination name, colliding with the actual nested message type.
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("stack")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("aggregation")}},
+			},
+		}
+
+		// Simulate existing type names that could collide
+		resolvedNames := map[string]string{
+			".example.ColorsBy.ColorsByAggregation": "ColorsByAggregation",
+			".example.ColorsBy.ColorsByStack":       "ColorsByStack",
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "ColorsBy", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		// Check that the collision is avoided by adding "Variant" suffix
+		if _, ok := result["ColorsByAggregationVariant"]; !ok {
+			t.Errorf("Expected 'ColorsByAggregationVariant' to exist due to collision avoidance, got keys: %v", result)
+		}
+		if _, ok := result["ColorsByStackVariant"]; !ok {
+			t.Errorf("Expected 'ColorsByStackVariant' to exist due to collision avoidance, got keys: %v", result)
+		}
+		// Ensure the original colliding names are NOT used
+		if _, ok := result["ColorsByAggregation"]; ok {
+			t.Errorf("Expected 'ColorsByAggregation' to NOT exist (should be renamed to avoid collision), got keys: %v", result)
+		}
+		if _, ok := result["ColorsByStack"]; ok {
+			t.Errorf("Expected 'ColorsByStack' to NOT exist (should be renamed to avoid collision), got keys: %v", result)
+		}
+	})
+
+	t.Run("NoCollision_NoVariantSuffix", func(t *testing.T) {
+		// When there's no collision, the Variant suffix should NOT be added
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("foo")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("bar")}},
+			},
+		}
+
+		// No colliding names - these don't match the generated combination names
+		resolvedNames := map[string]string{
+			".example.SomeOtherType": "SomeOtherType",
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "MyMessage", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		// Check that no "Variant" suffix is added when there's no collision
+		if _, ok := result["MyMessageFoo"]; !ok {
+			t.Errorf("Expected 'MyMessageFoo' to exist (no collision, no Variant suffix), got keys: %v", result)
+		}
+		if _, ok := result["MyMessageBar"]; !ok {
+			t.Errorf("Expected 'MyMessageBar' to exist (no collision, no Variant suffix), got keys: %v", result)
+		}
+		// Ensure Variant suffix is NOT added
+		if _, ok := result["MyMessageFooVariant"]; ok {
+			t.Errorf("Expected 'MyMessageFooVariant' to NOT exist (no collision should mean no Variant suffix), got keys: %v", result)
+		}
+		if _, ok := result["MyMessageBarVariant"]; ok {
+			t.Errorf("Expected 'MyMessageBarVariant' to NOT exist (no collision should mean no Variant suffix), got keys: %v", result)
+		}
+	})
+
+	t.Run("PartialCollision_OnlyCollidingGetsVariant", func(t *testing.T) {
+		// When only some combinations collide, only those should get the Variant suffix
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("collides")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("no_collision")}},
+			},
+		}
+
+		// Only one name collides
+		resolvedNames := map[string]string{
+			".example.Msg.MsgCollides": "MsgCollides", // This collides with "Msg_collides" -> "MsgCollides"
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Msg", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		// The colliding name should get Variant suffix
+		if _, ok := result["MsgCollidesVariant"]; !ok {
+			t.Errorf("Expected 'MsgCollidesVariant' to exist due to collision, got keys: %v", result)
+		}
+		// The non-colliding name should NOT get Variant suffix
+		if _, ok := result["MsgNoCollision"]; !ok {
+			t.Errorf("Expected 'MsgNoCollision' to exist (no collision, no Variant), got keys: %v", result)
+		}
+		// Ensure the original colliding name is not used
+		if _, ok := result["MsgCollides"]; ok {
+			t.Errorf("Expected 'MsgCollides' to NOT exist, got keys: %v", result)
+		}
+	})
+
+	t.Run("EmptyResolvedNames_NoVariantSuffix", func(t *testing.T) {
+		// With empty resolvedNames, there can be no collisions
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("alpha")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("beta")}},
+			},
+		}
+
+		resolvedNames := map[string]string{}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		if _, ok := result["TestAlpha"]; !ok {
+			t.Errorf("Expected 'TestAlpha' to exist, got keys: %v", result)
+		}
+		if _, ok := result["TestBeta"]; !ok {
+			t.Errorf("Expected 'TestBeta' to exist, got keys: %v", result)
+		}
+	})
+
+	t.Run("NilResolvedNames_NoVariantSuffix", func(t *testing.T) {
+		// With nil resolvedNames (backward compatibility), there should be no collisions
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("gamma")}},
+			},
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", nil)
+
+		if len(result) != 1 {
+			t.Fatalf("Expected 1 combination, got %d", len(result))
+		}
+
+		if _, ok := result["TestGamma"]; !ok {
+			t.Errorf("Expected 'TestGamma' to exist, got keys: %v", result)
+		}
+	})
 }
 
 func TestApplyInferredDiscriminatorFields(t *testing.T) {
