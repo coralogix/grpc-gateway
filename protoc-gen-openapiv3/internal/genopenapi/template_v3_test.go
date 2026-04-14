@@ -201,6 +201,46 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 			t.Errorf("Expected 'TestGamma' to exist, got keys: %v", result)
 		}
 	})
+
+	t.Run("CollisionWithDottedTypeName", func(t *testing.T) {
+		// This tests collision detection when resolved names contain dots.
+		// E.g., "Annotation.WidgetScope.SpecificWidgets" should collide with
+		// "AnnotationWidgetScopeSpecificWidgets" because some code generators
+		// strip dots when comparing names.
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("specific_widgets")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("all_widgets")}},
+			},
+		}
+
+		// The resolved name has dots, but when converted to PascalCase it would
+		// collide with the generated combination name
+		resolvedNames := map[string]string{
+			".example.Annotation.WidgetScope.SpecificWidgets": "Annotation.WidgetScope.SpecificWidgets",
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Annotation.WidgetScope", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		// The colliding name should get Variant suffix
+		// "Annotation.WidgetScope_specific_widgets" -> "AnnotationWidgetScopeSpecificWidgets"
+		// which collides with toPascalCase("Annotation.WidgetScope.SpecificWidgets") = "AnnotationWidgetScopeSpecificWidgets"
+		if _, ok := result["AnnotationWidgetScopeSpecificWidgetsVariant"]; !ok {
+			t.Errorf("Expected 'AnnotationWidgetScopeSpecificWidgetsVariant' to exist due to collision with dotted type name, got keys: %v", result)
+		}
+		// The non-colliding name should NOT get Variant suffix
+		if _, ok := result["AnnotationWidgetScopeAllWidgets"]; !ok {
+			t.Errorf("Expected 'AnnotationWidgetScopeAllWidgets' to exist (no collision), got keys: %v", result)
+		}
+		// Ensure the colliding name without Variant is not used
+		if _, ok := result["AnnotationWidgetScopeSpecificWidgets"]; ok {
+			t.Errorf("Expected 'AnnotationWidgetScopeSpecificWidgets' to NOT exist (should be renamed), got keys: %v", result)
+		}
+	})
 }
 
 func TestApplyInferredDiscriminatorFields(t *testing.T) {

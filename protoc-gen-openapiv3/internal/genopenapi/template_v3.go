@@ -1216,10 +1216,16 @@ func generateOneOfCombinationsWithResolvedNames(oneofGroups map[string][]*descri
 		allCombinations = newCombinations
 	}
 
-	// Build a set of existing type names for collision detection
+	// Build a set of existing type names for collision detection.
+	// We store both the original name and the PascalCase version (dots removed)
+	// because some code generators ignore dots when comparing names.
 	existingTypeNames := make(map[string]struct{})
 	for _, name := range resolvedNames {
 		existingTypeNames[name] = struct{}{}
+		// Also add the PascalCase version (dots stripped) to catch collisions
+		// where the generated name would match after dot removal
+		pascalName := toPascalCase(name)
+		existingTypeNames[pascalName] = struct{}{}
 	}
 
 	namedCombinations := make(map[string]map[string]*descriptor.Field, len(allCombinations))
