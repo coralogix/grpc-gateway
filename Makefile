@@ -85,6 +85,7 @@ install:
 	go install github.com/bufbuild/buf/cmd/buf@v1.45.0
 	go install \
 		./protoc-gen-openapiv2 \
+		./protoc-gen-openapiv3 \
 		./protoc-gen-grpc-gateway
 
 proto:
@@ -162,10 +163,13 @@ test: proto
 	go test -short -race ./...
 	go test -race ./examples/internal/integration -args -network=unix -endpoint=test.sock
 
+test-openapiv3:
+	go test -v ./protoc-gen-openapiv3/...
+
 clean:
 	find . -type f -name '*.pb.go' -delete
 	find . -type f ! -path "./golden-file-tests/*" -name "*.swagger.json" -delete
 	find . -type f -name '*.pb.gw.go' -delete
 	rm -f $(EXAMPLE_CLIENT_SRCS)
 
-.PHONY: generate test clean proto install
+.PHONY: generate test test-openapiv3 clean proto install

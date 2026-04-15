@@ -1869,16 +1869,22 @@ func validateAndCoerceJsonExample(exampleString string, targetType string) (stri
 			}
 		}
 
-		parsedFloat, err := strconv.ParseFloat(parsedValueStr, 64)
-		if err != nil {
-			return "", fmt.Errorf("example '%s' cannot be parsed as a number", exampleString)
-		}
-
 		if lowerType == "integer" {
-			if parsedFloat == float64(int64(parsedFloat)) {
-				return strconv.FormatInt(int64(parsedFloat), 10), nil
+			// Try parsing as int64 first to preserve precision for large integers
+			if parsedInt, err := strconv.ParseInt(parsedValueStr, 10, 64); err == nil {
+				return strconv.FormatInt(parsedInt, 10), nil
+			}
+			// Check if it's a float with no fractional part (e.g., "123.0")
+			if parsedFloat, err := strconv.ParseFloat(parsedValueStr, 64); err == nil {
+				if parsedFloat == float64(int64(parsedFloat)) {
+					return strconv.FormatInt(int64(parsedFloat), 10), nil
+				}
 			}
 			return "", fmt.Errorf("example '%s' is a float/double, not a valid integer", exampleString)
+		}
+
+		if _, err := strconv.ParseFloat(parsedValueStr, 64); err != nil {
+			return "", fmt.Errorf("example '%s' cannot be parsed as a number", exampleString)
 		}
 
 		return parsedValueStr, nil
