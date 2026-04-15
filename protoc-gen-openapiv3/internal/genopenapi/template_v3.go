@@ -618,7 +618,7 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 		return nil, map[string]*OpenAPIV3SchemaRef{}
 	}
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
-	bodyRepresentation := extractRequestBodyFieldCombinations(binding, registry)
+	bodyRepresentation := extractRequestBodyFieldCombinations(binding, registry, resolvedNames)
 	parameterFields := extractParameterFields(binding)
 	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
 	for combinationName, bodyFields := range bodyRepresentation.fieldCombinations {
@@ -686,19 +686,19 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 		}
 		if len(bodyProperties) > 0 {
 			schema := OpenAPIV3Schema{
-				Type:                 "object",
-				Properties:           bodyProperties,
-				Required:             bodyRepresentation.requiredFields,
-				Title:                bodyRepresentation.title,
-				Description:          bodyRepresentation.description,
-				AdditionalProperties: false,
-				OpenAPIV3Extensions:  bodyRepresentation.extensions,
+				Type:                "object",
+				Properties:          bodyProperties,
+				Required:            bodyRepresentation.requiredFields,
+				Title:               bodyRepresentation.title,
+				Description:         bodyRepresentation.description,
+				OpenAPIV3Extensions: bodyRepresentation.extensions,
 			}
 			oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
 				OpenAPIV3Schema: &schema,
 			}
 		}
 	}
+	applyInferredDiscriminatorFields(oneOfSchemas)
 	oneOfSchemaRefs := []*OpenAPIV3SchemaRef{}
 	for combinationName := range oneOfSchemas {
 		schemaRef := OpenAPIV3SchemaRef{
@@ -748,7 +748,7 @@ type openAPIV3BodyRepresentation struct {
 	externaDocs       *OpenAPIV3ExternalDocs
 }
 
-func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *descriptor.Registry) openAPIV3BodyRepresentation {
+func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *descriptor.Registry, resolvedNames map[string]string) openAPIV3BodyRepresentation {
 	var fieldMessage *descriptor.Message
 	bodyFields := []protoField{}
 	prefix := []string{}
@@ -842,7 +842,7 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		}
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, *fieldMessage.Name)
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, *fieldMessage.Name, resolvedNames)
 	protoFields := make(map[string][]protoField)
 	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
 		fields := make([]protoField, 0, len(combination)+len(fieldsNotPartOfOneofGroup))
@@ -1072,7 +1072,7 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 		return buildSchemaFromFieldsWithReferences(fieldsNotPartOfOneofGroup, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, resolvedNames[message.FQMN()])
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, resolvedNames[message.FQMN()], resolvedNames)
 
 	oneOfSchemas := []*OpenAPIV3SchemaRef{}
 	for combinationName := range combinationsOfFieldsPartOfOneofGroups {
@@ -1150,7 +1150,7 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		return buildSchemaFromFields(fieldsNotPartOfOneofGroup, schemaMap, requiredFields, title, description, externalDocs, extensions, resolvedNames, registry), map[string]*OpenAPIV3SchemaRef{}
 	}
 
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinations(oneofGroups, resolvedNames[message.FQMN()])
+	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, resolvedNames[message.FQMN()], resolvedNames)
 
 	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
 	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
@@ -1160,13 +1160,11 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		}
 		allSchemaFields := append(fieldsNotPartOfOneofGroup, combinationFields...)
 		schema := buildSchemaFromFieldsWithReferences(allSchemaFields, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
-		if schema.AdditionalProperties == nil {
-			schema.AdditionalProperties = false
-		}
 		oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
 	}
+	applyInferredDiscriminatorFields(oneOfSchemas)
 
 	if len(oneOfSchemas) == 1 {
 		for _, schema := range oneOfSchemas {
@@ -1189,6 +1187,10 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 }
 
 func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messageName string) map[string]map[string]*descriptor.Field {
+	return generateOneOfCombinationsWithResolvedNames(oneofGroups, messageName, nil)
+}
+
+func generateOneOfCombinationsWithResolvedNames(oneofGroups map[string][]*descriptor.Field, messageName string, resolvedNames map[string]string) map[string]map[string]*descriptor.Field {
 	allCombinations := []map[string]*descriptor.Field{{}}
 
 	oneofGroupNames := make([]string, 0, len(oneofGroups))
@@ -1214,6 +1216,18 @@ func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messa
 		allCombinations = newCombinations
 	}
 
+	// Build a set of existing type names for collision detection.
+	// We store both the original name and the PascalCase version (dots removed)
+	// because some code generators ignore dots when comparing names.
+	existingTypeNames := make(map[string]struct{})
+	for _, name := range resolvedNames {
+		existingTypeNames[name] = struct{}{}
+		// Also add the PascalCase version (dots stripped) to catch collisions
+		// where the generated name would match after dot removal
+		pascalName := toPascalCase(name)
+		existingTypeNames[pascalName] = struct{}{}
+	}
+
 	namedCombinations := make(map[string]map[string]*descriptor.Field, len(allCombinations))
 
 	for _, combination := range allCombinations {
@@ -1231,10 +1245,153 @@ func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messa
 		combinationName := strings.Join(keyParts, "_")
 		combinationName = messageName + "_" + combinationName
 		combinationName = toPascalCase(combinationName)
+
+		// Check for collision with existing type names and add suffix if needed
+		if _, exists := existingTypeNames[combinationName]; exists {
+			combinationName = combinationName + "Variant"
+		}
+
 		namedCombinations[combinationName] = combination
 	}
 
 	return namedCombinations
+}
+
+func applyInferredDiscriminatorFields(oneOfSchemas map[string]*OpenAPIV3SchemaRef) {
+	discriminatorFieldsBySchema, ok := inferDiscriminatorFields(oneOfSchemas)
+	if !ok {
+		return
+	}
+	for schemaName, discriminatorFields := range discriminatorFieldsBySchema {
+		schemaRef := oneOfSchemas[schemaName]
+		if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil {
+			continue
+		}
+		schemaRef.Required = mergeRequiredFields(schemaRef.Required, discriminatorFields)
+	}
+}
+
+func inferDiscriminatorFields(oneOfSchemas map[string]*OpenAPIV3SchemaRef) (map[string][]string, bool) {
+	if len(oneOfSchemas) <= 1 {
+		return map[string][]string{}, true
+	}
+
+	schemaNames := make([]string, 0, len(oneOfSchemas))
+	propertySets := make(map[string][]string, len(oneOfSchemas))
+	for schemaName, schemaRef := range oneOfSchemas {
+		schemaNames = append(schemaNames, schemaName)
+		if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil {
+			continue
+		}
+
+		properties := make([]string, 0, len(schemaRef.Properties))
+		for propertyName := range schemaRef.Properties {
+			properties = append(properties, propertyName)
+		}
+		sort.Strings(properties)
+		propertySets[schemaName] = properties
+	}
+	sort.Strings(schemaNames)
+
+	discriminatorFieldsBySchema := make(map[string][]string, len(oneOfSchemas))
+	for _, schemaName := range schemaNames {
+		discriminatorFields := minimalUniqueFieldSet(schemaName, propertySets)
+		if len(discriminatorFields) == 0 {
+			log.Printf("Warning: unable to infer discriminator fields for cartesian oneOf branch %q; sibling property sets: %v", schemaName, propertySets)
+			return nil, false
+		}
+		discriminatorFieldsBySchema[schemaName] = discriminatorFields
+	}
+
+	return discriminatorFieldsBySchema, true
+}
+
+func minimalUniqueFieldSet(targetSchema string, propertySets map[string][]string) []string {
+	targetProperties := propertySets[targetSchema]
+	if len(targetProperties) == 0 {
+		return nil
+	}
+
+	for subsetSize := 1; subsetSize <= len(targetProperties); subsetSize++ {
+		for _, subset := range combinationsOfStrings(targetProperties, subsetSize) {
+			isUnique := true
+			for schemaName, properties := range propertySets {
+				if schemaName == targetSchema {
+					continue
+				}
+				if containsAllStrings(properties, subset) {
+					isUnique = false
+					break
+				}
+			}
+			if isUnique {
+				return subset
+			}
+		}
+	}
+
+	return nil
+}
+
+func combinationsOfStrings(values []string, size int) [][]string {
+	if size <= 0 || size > len(values) {
+		return nil
+	}
+
+	var results [][]string
+	var current []string
+	var visit func(start int)
+	visit = func(start int) {
+		if len(current) == size {
+			results = append(results, slices.Clone(current))
+			return
+		}
+		for index := start; index <= len(values)-(size-len(current)); index++ {
+			current = append(current, values[index])
+			visit(index + 1)
+			current = current[:len(current)-1]
+		}
+	}
+	visit(0)
+
+	return results
+}
+
+func containsAllStrings(values []string, subset []string) bool {
+	valueSet := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		valueSet[value] = struct{}{}
+	}
+	for _, value := range subset {
+		if _, ok := valueSet[value]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeRequiredFields(existing []string, additions []string) []string {
+	if len(additions) == 0 {
+		return existing
+	}
+
+	merged := make([]string, 0, len(existing)+len(additions))
+	seen := make(map[string]struct{}, len(existing)+len(additions))
+	for _, field := range existing {
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		merged = append(merged, field)
+	}
+	for _, field := range additions {
+		if _, ok := seen[field]; ok {
+			continue
+		}
+		seen[field] = struct{}{}
+		merged = append(merged, field)
+	}
+	return merged
 }
 
 // Helper function to build a single OpenAPI schema from a list of fields.
@@ -1712,16 +1869,22 @@ func validateAndCoerceJsonExample(exampleString string, targetType string) (stri
 			}
 		}
 
-		parsedFloat, err := strconv.ParseFloat(parsedValueStr, 64)
-		if err != nil {
-			return "", fmt.Errorf("example '%s' cannot be parsed as a number", exampleString)
-		}
-
 		if lowerType == "integer" {
-			if parsedFloat == float64(int64(parsedFloat)) {
-				return strconv.FormatInt(int64(parsedFloat), 10), nil
+			// Try parsing as int64 first to preserve precision for large integers
+			if parsedInt, err := strconv.ParseInt(parsedValueStr, 10, 64); err == nil {
+				return strconv.FormatInt(parsedInt, 10), nil
+			}
+			// Check if it's a float with no fractional part (e.g., "123.0")
+			if parsedFloat, err := strconv.ParseFloat(parsedValueStr, 64); err == nil {
+				if parsedFloat == float64(int64(parsedFloat)) {
+					return strconv.FormatInt(int64(parsedFloat), 10), nil
+				}
 			}
 			return "", fmt.Errorf("example '%s' is a float/double, not a valid integer", exampleString)
+		}
+
+		if _, err := strconv.ParseFloat(parsedValueStr, 64); err != nil {
+			return "", fmt.Errorf("example '%s' cannot be parsed as a number", exampleString)
 		}
 
 		return parsedValueStr, nil

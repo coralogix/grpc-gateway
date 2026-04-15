@@ -383,8 +383,7 @@
           "variantA": {
             "$ref": "#/components/schemas/PolymorphicVariantA"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "CreateThingRequestVariantB": {
         "type": "object",
@@ -411,8 +410,7 @@
           "variantB": {
             "$ref": "#/components/schemas/PolymorphicVariantB"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "CreateThingResponse": {
         "type": "object",
@@ -470,8 +468,7 @@
           "selector": {
             "type": "string"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "HttpRuleDelete": {
         "type": "object",
@@ -494,8 +491,7 @@
           "selector": {
             "type": "string"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "HttpRuleGet": {
         "type": "object",
@@ -518,8 +514,7 @@
           "selector": {
             "type": "string"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "HttpRulePatch": {
         "type": "object",
@@ -542,8 +537,7 @@
           "selector": {
             "type": "string"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "HttpRulePost": {
         "type": "object",
@@ -566,8 +560,7 @@
           "selector": {
             "type": "string"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "HttpRulePut": {
         "type": "object",
@@ -590,8 +583,7 @@
           "selector": {
             "type": "string"
           }
-        },
-        "additionalProperties": false
+        }
       },
       "ListThingsRequest": {
         "type": "object",
@@ -749,7 +741,6 @@
             "$ref": "#/components/schemas/PolymorphicVariantA"
           }
         },
-        "additionalProperties": false,
         "externalDocs": {
           "url": ""
         }
@@ -780,7 +771,6 @@
             "$ref": "#/components/schemas/PolymorphicVariantB"
           }
         },
-        "additionalProperties": false,
         "externalDocs": {
           "url": ""
         }

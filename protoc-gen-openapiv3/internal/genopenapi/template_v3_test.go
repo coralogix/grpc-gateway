@@ -2,6 +2,7 @@ package genopenapi
 
 import (
 	"log"
+	"slices"
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
@@ -46,6 +47,283 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 		}
 
 	})
+
+	t.Run("CollisionWithExistingTypeName", func(t *testing.T) {
+		// This tests the scenario where a oneOf field name + message name creates a collision
+		// with an existing type name.
+		// E.g., message ColorsBy with field ColorsByAggregation aggregation would generate
+		// "ColorsByAggregation" as the combination name, colliding with the actual nested message type.
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("stack")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("aggregation")}},
+			},
+		}
+
+		// Simulate existing type names that could collide
+		resolvedNames := map[string]string{
+			".example.ColorsBy.ColorsByAggregation": "ColorsByAggregation",
+			".example.ColorsBy.ColorsByStack":       "ColorsByStack",
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "ColorsBy", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		// Check that the collision is avoided by adding "Variant" suffix
+		if _, ok := result["ColorsByAggregationVariant"]; !ok {
+			t.Errorf("Expected 'ColorsByAggregationVariant' to exist due to collision avoidance, got keys: %v", result)
+		}
+		if _, ok := result["ColorsByStackVariant"]; !ok {
+			t.Errorf("Expected 'ColorsByStackVariant' to exist due to collision avoidance, got keys: %v", result)
+		}
+		// Ensure the original colliding names are NOT used
+		if _, ok := result["ColorsByAggregation"]; ok {
+			t.Errorf("Expected 'ColorsByAggregation' to NOT exist (should be renamed to avoid collision), got keys: %v", result)
+		}
+		if _, ok := result["ColorsByStack"]; ok {
+			t.Errorf("Expected 'ColorsByStack' to NOT exist (should be renamed to avoid collision), got keys: %v", result)
+		}
+	})
+
+	t.Run("NoCollision_NoVariantSuffix", func(t *testing.T) {
+		// When there's no collision, the Variant suffix should NOT be added
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("foo")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("bar")}},
+			},
+		}
+
+		// No colliding names - these don't match the generated combination names
+		resolvedNames := map[string]string{
+			".example.SomeOtherType": "SomeOtherType",
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "MyMessage", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		// Check that no "Variant" suffix is added when there's no collision
+		if _, ok := result["MyMessageFoo"]; !ok {
+			t.Errorf("Expected 'MyMessageFoo' to exist (no collision, no Variant suffix), got keys: %v", result)
+		}
+		if _, ok := result["MyMessageBar"]; !ok {
+			t.Errorf("Expected 'MyMessageBar' to exist (no collision, no Variant suffix), got keys: %v", result)
+		}
+		// Ensure Variant suffix is NOT added
+		if _, ok := result["MyMessageFooVariant"]; ok {
+			t.Errorf("Expected 'MyMessageFooVariant' to NOT exist (no collision should mean no Variant suffix), got keys: %v", result)
+		}
+		if _, ok := result["MyMessageBarVariant"]; ok {
+			t.Errorf("Expected 'MyMessageBarVariant' to NOT exist (no collision should mean no Variant suffix), got keys: %v", result)
+		}
+	})
+
+	t.Run("PartialCollision_OnlyCollidingGetsVariant", func(t *testing.T) {
+		// When only some combinations collide, only those should get the Variant suffix
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("collides")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("no_collision")}},
+			},
+		}
+
+		// Only one name collides
+		resolvedNames := map[string]string{
+			".example.Msg.MsgCollides": "MsgCollides", // This collides with "Msg_collides" -> "MsgCollides"
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Msg", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		// The colliding name should get Variant suffix
+		if _, ok := result["MsgCollidesVariant"]; !ok {
+			t.Errorf("Expected 'MsgCollidesVariant' to exist due to collision, got keys: %v", result)
+		}
+		// The non-colliding name should NOT get Variant suffix
+		if _, ok := result["MsgNoCollision"]; !ok {
+			t.Errorf("Expected 'MsgNoCollision' to exist (no collision, no Variant), got keys: %v", result)
+		}
+		// Ensure the original colliding name is not used
+		if _, ok := result["MsgCollides"]; ok {
+			t.Errorf("Expected 'MsgCollides' to NOT exist, got keys: %v", result)
+		}
+	})
+
+	t.Run("EmptyResolvedNames_NoVariantSuffix", func(t *testing.T) {
+		// With empty resolvedNames, there can be no collisions
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("alpha")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("beta")}},
+			},
+		}
+
+		resolvedNames := map[string]string{}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		if _, ok := result["TestAlpha"]; !ok {
+			t.Errorf("Expected 'TestAlpha' to exist, got keys: %v", result)
+		}
+		if _, ok := result["TestBeta"]; !ok {
+			t.Errorf("Expected 'TestBeta' to exist, got keys: %v", result)
+		}
+	})
+
+	t.Run("NilResolvedNames_NoVariantSuffix", func(t *testing.T) {
+		// With nil resolvedNames (backward compatibility), there should be no collisions
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("gamma")}},
+			},
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", nil)
+
+		if len(result) != 1 {
+			t.Fatalf("Expected 1 combination, got %d", len(result))
+		}
+
+		if _, ok := result["TestGamma"]; !ok {
+			t.Errorf("Expected 'TestGamma' to exist, got keys: %v", result)
+		}
+	})
+
+	t.Run("CollisionWithDottedTypeName", func(t *testing.T) {
+		// This tests collision detection when resolved names contain dots.
+		// E.g., "Annotation.WidgetScope.SpecificWidgets" should collide with
+		// "AnnotationWidgetScopeSpecificWidgets" because some code generators
+		// strip dots when comparing names.
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("specific_widgets")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("all_widgets")}},
+			},
+		}
+
+		// The resolved name has dots, but when converted to PascalCase it would
+		// collide with the generated combination name
+		resolvedNames := map[string]string{
+			".example.Annotation.WidgetScope.SpecificWidgets": "Annotation.WidgetScope.SpecificWidgets",
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Annotation.WidgetScope", resolvedNames)
+
+		if len(result) != 2 {
+			t.Fatalf("Expected 2 combinations, got %d", len(result))
+		}
+
+		// The colliding name should get Variant suffix
+		// "Annotation.WidgetScope_specific_widgets" -> "AnnotationWidgetScopeSpecificWidgets"
+		// which collides with toPascalCase("Annotation.WidgetScope.SpecificWidgets") = "AnnotationWidgetScopeSpecificWidgets"
+		if _, ok := result["AnnotationWidgetScopeSpecificWidgetsVariant"]; !ok {
+			t.Errorf("Expected 'AnnotationWidgetScopeSpecificWidgetsVariant' to exist due to collision with dotted type name, got keys: %v", result)
+		}
+		// The non-colliding name should NOT get Variant suffix
+		if _, ok := result["AnnotationWidgetScopeAllWidgets"]; !ok {
+			t.Errorf("Expected 'AnnotationWidgetScopeAllWidgets' to exist (no collision), got keys: %v", result)
+		}
+		// Ensure the colliding name without Variant is not used
+		if _, ok := result["AnnotationWidgetScopeSpecificWidgets"]; ok {
+			t.Errorf("Expected 'AnnotationWidgetScopeSpecificWidgets' to NOT exist (should be renamed), got keys: %v", result)
+		}
+	})
+}
+
+func TestApplyInferredDiscriminatorFields(t *testing.T) {
+	t.Run("single unique field", func(t *testing.T) {
+		schemas := map[string]*OpenAPIV3SchemaRef{
+			"LogRulesVariant": {
+				OpenAPIV3Schema: &OpenAPIV3Schema{
+					Properties: map[string]*OpenAPIV3SchemaRef{
+						"name":     {},
+						"priority": {},
+						"logRules": {},
+					},
+					Required: []string{"name", "priority"},
+				},
+			},
+			"SpanRulesVariant": {
+				OpenAPIV3Schema: &OpenAPIV3Schema{
+					Properties: map[string]*OpenAPIV3SchemaRef{
+						"name":      {},
+						"priority":  {},
+						"spanRules": {},
+					},
+					Required: []string{"name", "priority"},
+				},
+			},
+		}
+
+		applyInferredDiscriminatorFields(schemas)
+
+		if got := schemas["LogRulesVariant"].Required; !slices.Equal(got, []string{"name", "priority", "logRules"}) {
+			t.Fatalf("LogRulesVariant required fields = %v, want %v", got, []string{"name", "priority", "logRules"})
+		}
+		if got := schemas["SpanRulesVariant"].Required; !slices.Equal(got, []string{"name", "priority", "spanRules"}) {
+			t.Fatalf("SpanRulesVariant required fields = %v, want %v", got, []string{"name", "priority", "spanRules"})
+		}
+	})
+
+	t.Run("combo-only discriminator", func(t *testing.T) {
+		schemas := map[string]*OpenAPIV3SchemaRef{
+			"AlphaXray":   {OpenAPIV3Schema: schemaWithProperties("common", "alpha", "xray")},
+			"AlphaYankee": {OpenAPIV3Schema: schemaWithProperties("common", "alpha", "yankee")},
+			"BetaXray":    {OpenAPIV3Schema: schemaWithProperties("common", "beta", "xray")},
+			"BetaYankee":  {OpenAPIV3Schema: schemaWithProperties("common", "beta", "yankee")},
+		}
+
+		applyInferredDiscriminatorFields(schemas)
+
+		assertRequiredFields(t, schemas["AlphaXray"].Required, []string{"alpha", "xray"})
+		assertRequiredFields(t, schemas["AlphaYankee"].Required, []string{"alpha", "yankee"})
+		assertRequiredFields(t, schemas["BetaXray"].Required, []string{"beta", "xray"})
+		assertRequiredFields(t, schemas["BetaYankee"].Required, []string{"beta", "yankee"})
+	})
+
+	t.Run("impossible discriminator leaves schemas unchanged", func(t *testing.T) {
+		schemas := map[string]*OpenAPIV3SchemaRef{
+			"Left":  {OpenAPIV3Schema: schemaWithProperties("common", "value")},
+			"Right": {OpenAPIV3Schema: schemaWithProperties("common", "value")},
+		}
+
+		applyInferredDiscriminatorFields(schemas)
+
+		if len(schemas["Left"].Required) != 0 {
+			t.Fatalf("Left required fields = %v, want unchanged empty slice", schemas["Left"].Required)
+		}
+		if len(schemas["Right"].Required) != 0 {
+			t.Fatalf("Right required fields = %v, want unchanged empty slice", schemas["Right"].Required)
+		}
+	})
+}
+
+func schemaWithProperties(propertyNames ...string) *OpenAPIV3Schema {
+	properties := make(map[string]*OpenAPIV3SchemaRef, len(propertyNames))
+	for _, propertyName := range propertyNames {
+		properties[propertyName] = &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{}}
+	}
+	return &OpenAPIV3Schema{Properties: properties}
+}
+
+func assertRequiredFields(t *testing.T, got []string, want []string) {
+	t.Helper()
+	if !slices.Equal(got, want) {
+		t.Fatalf("required fields = %v, want %v", got, want)
+	}
 }
 
 func Test_sanitizeUrlPath(t *testing.T) {
