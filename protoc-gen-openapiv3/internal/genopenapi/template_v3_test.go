@@ -3,6 +3,7 @@ package genopenapi
 import (
 	"log"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
@@ -438,6 +439,219 @@ func TestApplyPathParamRenames(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestCheckDuplicatePath(t *testing.T) {
+	t.Run("no duplicates - different paths", func(t *testing.T) {
+		registeredPaths := make(map[pathMethodKey]pathMethodSource)
+
+		// First registration
+		err := checkDuplicatePath(registeredPaths, "/v1/users/{id}", "GET", "UserService", "GetUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for first path, got: %v", err)
+		}
+
+		// Second registration with different path
+		err = checkDuplicatePath(registeredPaths, "/v1/users", "GET", "UserService", "ListUsers", 0)
+		if err != nil {
+			t.Fatalf("expected no error for different path, got: %v", err)
+		}
+
+		// Third registration with different path
+		err = checkDuplicatePath(registeredPaths, "/v1/accounts/{id}", "GET", "AccountService", "GetAccount", 0)
+		if err != nil {
+			t.Fatalf("expected no error for different path, got: %v", err)
+		}
+	})
+
+	t.Run("no duplicates - same path different methods", func(t *testing.T) {
+		registeredPaths := make(map[pathMethodKey]pathMethodSource)
+
+		// GET registration
+		err := checkDuplicatePath(registeredPaths, "/v1/users/{id}", "GET", "UserService", "GetUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for GET, got: %v", err)
+		}
+
+		// PUT registration (same path, different method)
+		err = checkDuplicatePath(registeredPaths, "/v1/users/{id}", "PUT", "UserService", "UpdateUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for PUT on same path, got: %v", err)
+		}
+
+		// DELETE registration (same path, different method)
+		err = checkDuplicatePath(registeredPaths, "/v1/users/{id}", "DELETE", "UserService", "DeleteUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for DELETE on same path, got: %v", err)
+		}
+
+		// POST registration (same path, different method)
+		err = checkDuplicatePath(registeredPaths, "/v1/users/{id}", "POST", "UserService", "CreateUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for POST on same path, got: %v", err)
+		}
+
+		// PATCH registration (same path, different method)
+		err = checkDuplicatePath(registeredPaths, "/v1/users/{id}", "PATCH", "UserService", "PatchUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for PATCH on same path, got: %v", err)
+		}
+	})
+
+	t.Run("duplicate path and method within same service", func(t *testing.T) {
+		registeredPaths := make(map[pathMethodKey]pathMethodSource)
+
+		// First registration
+		err := checkDuplicatePath(registeredPaths, "/v1/users/{id}", "GET", "TestService", "GetUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for first registration, got: %v", err)
+		}
+
+		// Duplicate registration
+		err = checkDuplicatePath(registeredPaths, "/v1/users/{id}", "GET", "TestService", "GetUserById", 0)
+		if err == nil {
+			t.Fatal("expected error for duplicate path and method, got nil")
+		}
+
+		// Verify error message contains useful information
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "duplicate HTTP path and method") {
+			t.Errorf("error message should mention 'duplicate HTTP path and method', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "GET /v1/users/{id}") {
+			t.Errorf("error message should contain path and method 'GET /v1/users/{id}', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "GetUser") {
+			t.Errorf("error message should mention first method 'GetUser', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "GetUserById") {
+			t.Errorf("error message should mention second method 'GetUserById', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "TestService") {
+			t.Errorf("error message should mention service 'TestService', got: %s", errMsg)
+		}
+	})
+
+	t.Run("duplicate path and method across different services", func(t *testing.T) {
+		registeredPaths := make(map[pathMethodKey]pathMethodSource)
+
+		// First service registration
+		err := checkDuplicatePath(registeredPaths, "/v1/users/{id}", "GET", "UserService", "GetUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for first registration, got: %v", err)
+		}
+
+		// Second service registration (duplicate)
+		err = checkDuplicatePath(registeredPaths, "/v1/users/{id}", "GET", "AdminService", "GetUserAdmin", 0)
+		if err == nil {
+			t.Fatal("expected error for duplicate path and method across services, got nil")
+		}
+
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "UserService") {
+			t.Errorf("error message should mention first service 'UserService', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "AdminService") {
+			t.Errorf("error message should mention second service 'AdminService', got: %s", errMsg)
+		}
+	})
+
+	t.Run("duplicate via additional bindings", func(t *testing.T) {
+		registeredPaths := make(map[pathMethodKey]pathMethodSource)
+
+		// Main binding
+		err := checkDuplicatePath(registeredPaths, "/v1/users/{id}", "GET", "TestService", "GetUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for main binding, got: %v", err)
+		}
+
+		// Additional binding on same method
+		err = checkDuplicatePath(registeredPaths, "/v1/accounts/{id}", "GET", "TestService", "GetUser", 1)
+		if err != nil {
+			t.Fatalf("expected no error for additional binding with different path, got: %v", err)
+		}
+
+		// Another method trying to use the same path as the additional binding
+		err = checkDuplicatePath(registeredPaths, "/v1/accounts/{id}", "GET", "TestService", "GetAccount", 0)
+		if err == nil {
+			t.Fatal("expected error for duplicate path via additional binding, got nil")
+		}
+
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "/v1/accounts/{id}") {
+			t.Errorf("error message should contain the conflicting path '/v1/accounts/{id}', got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "binding 1") {
+			t.Errorf("error message should mention binding index 1 for the additional binding, got: %s", errMsg)
+		}
+		if !strings.Contains(errMsg, "binding 0") {
+			t.Errorf("error message should mention binding index 0 for the conflicting method, got: %s", errMsg)
+		}
+	})
+
+	t.Run("duplicate POST endpoints", func(t *testing.T) {
+		registeredPaths := make(map[pathMethodKey]pathMethodSource)
+
+		err := checkDuplicatePath(registeredPaths, "/v1/users", "POST", "TestService", "CreateUser", 0)
+		if err != nil {
+			t.Fatalf("expected no error for first POST, got: %v", err)
+		}
+
+		err = checkDuplicatePath(registeredPaths, "/v1/users", "POST", "TestService", "AddUser", 0)
+		if err == nil {
+			t.Fatal("expected error for duplicate POST path, got nil")
+		}
+
+		errMsg := err.Error()
+		if !strings.Contains(errMsg, "POST /v1/users") {
+			t.Errorf("error message should contain 'POST /v1/users', got: %s", errMsg)
+		}
+	})
+
+	t.Run("all HTTP methods can be duplicated", func(t *testing.T) {
+		methods := []string{"GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD", "TRACE"}
+
+		for _, method := range methods {
+			t.Run(method, func(t *testing.T) {
+				registeredPaths := make(map[pathMethodKey]pathMethodSource)
+
+				err := checkDuplicatePath(registeredPaths, "/v1/test", method, "Service1", "Method1", 0)
+				if err != nil {
+					t.Fatalf("expected no error for first %s registration, got: %v", method, err)
+				}
+
+				err = checkDuplicatePath(registeredPaths, "/v1/test", method, "Service2", "Method2", 0)
+				if err == nil {
+					t.Fatalf("expected error for duplicate %s path, got nil", method)
+				}
+
+				if !strings.Contains(err.Error(), method+" /v1/test") {
+					t.Errorf("error message should contain '%s /v1/test', got: %s", method, err.Error())
+				}
+			})
+		}
+	})
+}
+
+func TestSanitizeURLPath_DuplicateDetection(t *testing.T) {
+	// Test that paths normalize correctly and would be detected as duplicates
+	t.Run("dotted path params normalize to same path", func(t *testing.T) {
+		path1 := sanitizeURLPath("/v1/users/{user.id}")
+		path2 := sanitizeURLPath("/v1/users/{id}")
+
+		if path1 != path2 {
+			t.Errorf("expected paths to normalize to same value, got %q and %q", path1, path2)
+		}
+	})
+
+	t.Run("deeply nested path params normalize", func(t *testing.T) {
+		path1 := sanitizeURLPath("/v1/users/{user.profile.id}")
+		path2 := sanitizeURLPath("/v1/users/{id}")
+
+		if path1 != path2 {
+			t.Errorf("expected paths to normalize to same value, got %q and %q", path1, path2)
+		}
+	})
 }
 
 func TestValidateAndCoerceJsonExample(t *testing.T) {

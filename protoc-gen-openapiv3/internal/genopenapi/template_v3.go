@@ -186,9 +186,50 @@ func resolveNames(param param) map[string]string {
 	}
 }
 
+// pathMethodKey represents a unique combination of HTTP path and method for duplicate detection.
+type pathMethodKey struct {
+	path   string
+	method string
+}
+
+// pathMethodSource tracks the source RPC that registered a particular path + method combination.
+type pathMethodSource struct {
+	serviceName string
+	methodName  string
+	bindingIdx  int
+}
+
+// checkDuplicatePath checks if a path + method combination has already been registered.
+// Returns an error if a duplicate is found.
+func checkDuplicatePath(
+	registeredPaths map[pathMethodKey]pathMethodSource,
+	path, httpMethod, serviceName, methodName string,
+	bindingIdx int,
+) error {
+	key := pathMethodKey{path: path, method: httpMethod}
+	if existing, found := registeredPaths[key]; found {
+		return fmt.Errorf(
+			"duplicate HTTP path and method: %s %s is defined by both %s.%s (binding %d) and %s.%s (binding %d)",
+			httpMethod, path,
+			existing.serviceName, existing.methodName, existing.bindingIdx,
+			serviceName, methodName, bindingIdx,
+		)
+	}
+	registeredPaths[key] = pathMethodSource{
+		serviceName: serviceName,
+		methodName:  methodName,
+		bindingIdx:  bindingIdx,
+	}
+	return nil
+}
+
 func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV3Paths, map[string]*OpenAPIV3SchemaRef, error) {
 	paths := OpenAPIV3Paths{}
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
+
+	// Track registered path + method combinations to detect duplicates
+	registeredPaths := make(map[pathMethodKey]pathMethodSource)
+
 	for _, svc := range param.Services {
 		if !isVisible(getServiceVisibilityOption(svc), param.reg) {
 			continue
@@ -250,10 +291,15 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 					}
 				}
 				path := applyPathParamRenames(sanitizeURLPath(b.PathTmpl.Template), buildPathParamRenames(b, param.reg))
+				httpMethod := b.HTTPMethod
+
+				// Check for duplicate path + method combination
+				if err := checkDuplicatePath(registeredPaths, path, httpMethod, svc.GetName(), m.GetName(), b.Index); err != nil {
+					return nil, nil, err
+				}
 
 				// Ensure the path item exists
 				pathItem, ok := paths[path]
-				httpMethod := b.HTTPMethod
 				if !ok {
 					pathItem = &OpenAPIV3PathItem{}
 					paths[path] = pathItem
