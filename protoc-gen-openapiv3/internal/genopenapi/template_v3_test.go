@@ -7,8 +7,11 @@ import (
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
+	"google.golang.org/protobuf/compiler/protogen"
+	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/pluginpb"
 )
 
 // Mock descriptor.Field type to simulate a protobuf field
@@ -850,4 +853,200 @@ func TestValidateAndCoerceJsonExample(t *testing.T) {
 			}
 		})
 	}
+}
+
+// registryFromPrototext creates a Registry populated from one or more prototext-encoded FileDescriptorProtos.
+func registryFromPrototext(t *testing.T, sources ...string) *descriptor.Registry {
+	t.Helper()
+	req := &pluginpb.CodeGeneratorRequest{}
+	for _, src := range sources {
+		var fd descriptorpb.FileDescriptorProto
+		if err := prototext.Unmarshal([]byte(src), &fd); err != nil {
+			t.Fatalf("prototext.Unmarshal: %v", err)
+		}
+		req.FileToGenerate = append(req.FileToGenerate, fd.GetName())
+		req.ProtoFile = append(req.ProtoFile, &fd)
+	}
+	plugin, err := protogen.Options{}.New(req)
+	if err != nil {
+		t.Fatalf("protogen.Options{}.New: %v", err)
+	}
+	reg := descriptor.NewRegistry()
+	if err := reg.LoadFromPlugin(plugin); err != nil {
+		t.Fatalf("reg.LoadFromPlugin: %v", err)
+	}
+	return reg
+}
+
+// messageField builds a *descriptor.Field with TYPE_MESSAGE pointing at typeName.
+func messageField(name, typeName string) *descriptor.Field {
+	ft := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	return &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Type:     &ft,
+			TypeName: proto.String(typeName),
+			Name:     proto.String(name),
+			Number:   proto.Int32(1),
+		},
+	}
+}
+
+func TestBuildPropertySchemaFromFieldType_DependencyFileMessage(t *testing.T) {
+	t.Run("dependency-file message is inlined from registry", func(t *testing.T) {
+		// google.type.Date lives in a dependency file (no services), so it never ends up in
+		// the schemaMap that buildMessageSchemas builds from target files only.
+		reg := registryFromPrototext(t, `
+			name: "google/type/date.proto"
+			package: "google.type"
+			message_type {
+				name: "Date"
+				field { name: "year"  number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 json_name: "year" }
+				field { name: "month" number: 2 label: LABEL_OPTIONAL type: TYPE_INT32 json_name: "month" }
+				field { name: "day"   number: 3 label: LABEL_OPTIONAL type: TYPE_INT32 json_name: "day" }
+			}
+			options { go_package: "google.golang.org/genproto/googleapis/type/date" }
+			syntax: "proto3"
+		`)
+
+		schemaMap := make(map[string]*OpenAPIV3SchemaRef)
+		result, _ := buildPropertySchemaFromFieldType(messageField("date", ".google.type.Date"), schemaMap, nil, reg)
+
+		if result == nil || result.OpenAPIV3Schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		schema := result.OpenAPIV3Schema
+		if schema.Type != "object" {
+			t.Errorf("Type = %q, want %q", schema.Type, "object")
+		}
+		if len(schema.Properties) != 3 {
+			t.Errorf("len(Properties) = %d, want 3 (year, month, day)", len(schema.Properties))
+		}
+		for _, prop := range []string{"year", "month", "day"} {
+			p, ok := schema.Properties[prop]
+			if !ok {
+				t.Errorf("missing property %q", prop)
+				continue
+			}
+			if p.OpenAPIV3Schema.Type != "integer" {
+				t.Errorf("Properties[%q].Type = %q, want %q", prop, p.OpenAPIV3Schema.Type, "integer")
+			}
+		}
+		// schema is cached so subsequent lookups don't re-build it
+		if schemaMap[".google.type.Date"] == nil {
+			t.Error("expected schemaMap to be populated after inlining")
+		}
+	})
+
+	t.Run("message already in schemaMap uses cached schema not registry", func(t *testing.T) {
+		// Message is both registered AND pre-populated in schemaMap (the normal target-file path).
+		// The schemaMap entry should win over re-building from registry.
+		reg := registryFromPrototext(t, `
+			name: "example/msg.proto"
+			package: "example"
+			message_type {
+				name: "Msg"
+				field { name: "id" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "id" }
+			}
+			options { go_package: "example.com/example" }
+			syntax: "proto3"
+		`)
+		existing := &OpenAPIV3Schema{Type: "object", Title: "cached"}
+		schemaMap := map[string]*OpenAPIV3SchemaRef{
+			".example.Msg": {OpenAPIV3Schema: existing},
+		}
+
+		result, _ := buildPropertySchemaFromFieldType(messageField("msg", ".example.Msg"), schemaMap, nil, reg)
+
+		if result == nil || result.OpenAPIV3Schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if result.OpenAPIV3Schema.Title != "cached" {
+			t.Errorf("Title = %q, want %q (schemaMap should take precedence over registry)", result.OpenAPIV3Schema.Title, "cached")
+		}
+	})
+
+	t.Run("circular reference between dependency-file messages does not loop", func(t *testing.T) {
+		// A.b references B, B.a references A — must not recurse infinitely.
+		reg := registryFromPrototext(t, `
+			name: "pkg/ab.proto"
+			package: "pkg"
+			message_type {
+				name: "A"
+				field { name: "b_field" number: 1 label: LABEL_OPTIONAL type: TYPE_MESSAGE type_name: ".pkg.B" json_name: "bField" }
+			}
+			message_type {
+				name: "B"
+				field { name: "a_field" number: 1 label: LABEL_OPTIONAL type: TYPE_MESSAGE type_name: ".pkg.A" json_name: "aField" }
+			}
+			options { go_package: "example.com/pkg" }
+			syntax: "proto3"
+		`)
+
+		schemaMap := make(map[string]*OpenAPIV3SchemaRef)
+		result, _ := buildPropertySchemaFromFieldType(messageField("a", ".pkg.A"), schemaMap, nil, reg)
+
+		if result == nil || result.OpenAPIV3Schema == nil {
+			t.Fatal("expected non-nil schema, got nil")
+		}
+		if result.OpenAPIV3Schema.Type != "object" {
+			t.Errorf("Type = %q, want %q", result.OpenAPIV3Schema.Type, "object")
+		}
+	})
+
+	t.Run("nested dependency-file messages are recursively inlined", func(t *testing.T) {
+		// Outer contains Inner, both are dependency-file messages.
+		reg := registryFromPrototext(t, `
+			name: "pkg/nested.proto"
+			package: "pkg"
+			message_type {
+				name: "Outer"
+				field { name: "inner" number: 1 label: LABEL_OPTIONAL type: TYPE_MESSAGE type_name: ".pkg.Inner" json_name: "inner" }
+			}
+			message_type {
+				name: "Inner"
+				field { name: "value" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "value" }
+			}
+			options { go_package: "example.com/pkg" }
+			syntax: "proto3"
+		`)
+
+		schemaMap := make(map[string]*OpenAPIV3SchemaRef)
+		result, _ := buildPropertySchemaFromFieldType(messageField("outer", ".pkg.Outer"), schemaMap, nil, reg)
+
+		if result == nil || result.OpenAPIV3Schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		outerSchema := result.OpenAPIV3Schema
+		if outerSchema.Type != "object" {
+			t.Errorf("Outer type = %q, want %q", outerSchema.Type, "object")
+		}
+		innerRef, ok := outerSchema.Properties["inner"]
+		if !ok {
+			t.Fatal("expected 'inner' property on Outer schema")
+		}
+		if innerRef.OpenAPIV3Schema == nil {
+			t.Fatal("expected inlined Inner schema, got nil")
+		}
+		if innerRef.OpenAPIV3Schema.Type != "object" {
+			t.Errorf("Inner type = %q, want %q", innerRef.OpenAPIV3Schema.Type, "object")
+		}
+		if _, ok := innerRef.OpenAPIV3Schema.Properties["value"]; !ok {
+			t.Error("expected 'value' property on Inner schema")
+		}
+	})
+
+	t.Run("message not found in registry returns empty object without panic", func(t *testing.T) {
+		reg := descriptor.NewRegistry() // empty registry
+		schemaMap := make(map[string]*OpenAPIV3SchemaRef)
+
+		result, _ := buildPropertySchemaFromFieldType(messageField("unknown", ".pkg.Unknown"), schemaMap, nil, reg)
+
+		if result == nil || result.OpenAPIV3Schema == nil {
+			t.Fatal("expected non-nil schema even for unknown type")
+		}
+		// Should gracefully return an empty object schema
+		if result.OpenAPIV3Schema.Type != "object" {
+			t.Errorf("Type = %q, want %q", result.OpenAPIV3Schema.Type, "object")
+		}
+	})
 }

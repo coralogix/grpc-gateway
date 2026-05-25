@@ -2313,7 +2313,13 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			if schemaRef != nil {
 				schema = schemaRef.OpenAPIV3Schema
 			} else {
-				log.Printf("Warning: could not find schema for message %s", *field.TypeName)
+				// Message is from a dependency file (not a target file, so absent from schemaMap).
+				// Pre-populate a placeholder before recursing to break potential circular references.
+				placeholder := &OpenAPIV3SchemaRef{OpenAPIV3Schema: schema}
+				schemaMap[*field.TypeName] = placeholder
+				inlined, _ := buildOpenAPIV3SchemaFromMessage(fieldMessage, schemaMap, resolvedNames, registry)
+				schema = inlined
+				placeholder.OpenAPIV3Schema = inlined
 			}
 			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: schema}, arrayExample
 		}
