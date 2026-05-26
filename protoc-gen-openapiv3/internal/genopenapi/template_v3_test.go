@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
+	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 )
@@ -849,5 +850,121 @@ func TestValidateAndCoerceJsonExample(t *testing.T) {
 					tc.inputString, tc.targetType, tc.expectedValue, actual)
 			}
 		})
+	}
+}
+
+func makeRepeatedFieldWithExtension(name string, fieldType descriptorpb.FieldDescriptorProto_Type, ext *options.JSONSchema) *descriptor.Field {
+	opts := &descriptorpb.FieldOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	label := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	return &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:    proto.String(name),
+			Type:    &fieldType,
+			Label:   &label,
+			Options: opts,
+		},
+	}
+}
+
+func TestRepeatedField_DescriptionOnArraySchema(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("items", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Description: "the list of items",
+	})
+	reg := descriptor.NewRegistry()
+	schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+	if schema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	if schema.Type != "array" {
+		t.Fatalf("expected array schema, got %q", schema.Type)
+	}
+	if schema.Description != "the list of items" {
+		t.Errorf("expected description %q on array schema, got %q", "the list of items", schema.Description)
+	}
+}
+
+func TestRepeatedField_MinMaxItemsOnArraySchema(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("tags", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		MinItems: 1,
+		MaxItems: 10,
+	})
+	reg := descriptor.NewRegistry()
+	schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+	if schema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	if schema.MinItems != 1 {
+		t.Errorf("expected minItems=1, got %d", schema.MinItems)
+	}
+	if schema.MaxItems != 10 {
+		t.Errorf("expected maxItems=10, got %d", schema.MaxItems)
+	}
+}
+
+func TestFilterOutPathParams(t *testing.T) {
+	makeField := func(name string) *descriptor.Field {
+		return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String(name)}}
+	}
+	tests := []struct {
+		name            string
+		required        []string
+		parameterFields []protoField
+		want            []string
+	}{
+		{
+			name:            "removes path param from required",
+			required:        []string{"id", "name", "status"},
+			parameterFields: []protoField{{FullPathToField: []string{"id"}, Field: makeField("id")}},
+			want:            []string{"name", "status"},
+		},
+		{
+			name:            "removes multiple path params",
+			required:        []string{"org_id", "resource_id", "name"},
+			parameterFields: []protoField{
+				{FullPathToField: []string{"org_id"}, Field: makeField("org_id")},
+				{FullPathToField: []string{"resource_id"}, Field: makeField("resource_id")},
+			},
+			want: []string{"name"},
+		},
+		{
+			name:            "no path params leaves required unchanged",
+			required:        []string{"name", "status"},
+			parameterFields: []protoField{},
+			want:            []string{"name", "status"},
+		},
+		{
+			name:            "all fields are path params yields empty required",
+			required:        []string{"id"},
+			parameterFields: []protoField{{FullPathToField: []string{"id"}, Field: makeField("id")}},
+			want:            []string{},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got := filterOutPathParams(tc.required, tc.parameterFields)
+			if !slices.Equal(got, tc.want) {
+				t.Errorf("filterOutPathParams() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestBuildSchemaFromFields_EmptyMessage_AdditionalPropertiesFalse(t *testing.T) {
+	schema := buildSchemaFromFieldsWithReferences(
+		nil,
+		descriptor.NewRegistry(),
+		nil,
+		"",
+		"",
+		nil,
+		nil,
+		map[string]string{},
+	)
+	if schema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	if schema.AdditionalProperties != false {
+		t.Errorf("expected additionalProperties=false for empty message, got %v", schema.AdditionalProperties)
 	}
 }
