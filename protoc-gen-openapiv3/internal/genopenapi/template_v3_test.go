@@ -981,8 +981,7 @@ func TestBuildSchemaFromFields_EmptyMessage_AdditionalPropertiesFalse(t *testing
 }
 
 // TestOneOfCombinationsStableOrder verifies that iterating the combinations map and
-// sorting produces a deterministic order regardless of Go's map randomisation
-// (fixes BUGV2-5805).
+// sorting produces a deterministic order regardless of Go's map randomisation.
 func TestOneOfCombinationsStableOrder(t *testing.T) {
 	// Two oneof groups, two variants each → 4 CartesianProduct combinations.
 	oneofGroups := map[string][]*descriptor.Field{
