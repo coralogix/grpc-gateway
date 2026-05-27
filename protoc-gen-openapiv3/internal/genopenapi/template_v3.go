@@ -734,7 +734,7 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			schema := OpenAPIV3Schema{
 				Type:                "object",
 				Properties:          bodyProperties,
-				Required:            bodyRepresentation.requiredFields,
+				Required:            filterRequired(bodyRepresentation.requiredFields, bodyProperties),
 				Title:               bodyRepresentation.title,
 				Description:         bodyRepresentation.description,
 				OpenAPIV3Extensions: bodyRepresentation.extensions,
@@ -918,6 +918,16 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		extensions:        extensions,
 		externaDocs:       externalDocs,
 	}
+}
+
+func filterRequired(required []string, bodyProperties map[string]*OpenAPIV3SchemaRef) []string {
+	result := make([]string, 0, len(required))
+	for _, r := range required {
+		if _, exists := bodyProperties[r]; exists {
+			result = append(result, r)
+		}
+	}
+	return result
 }
 
 func extractParameterFields(binding *descriptor.Binding) []protoField {
@@ -1460,7 +1470,7 @@ func buildSchemaFromFieldsWithReferences(
 		}
 		properties[*field.Name] = propertySchema
 	}
-	return &OpenAPIV3Schema{
+	schema := &OpenAPIV3Schema{
 		Type:                "object",
 		Title:               title,
 		Description:         description,
@@ -1469,6 +1479,10 @@ func buildSchemaFromFieldsWithReferences(
 		Properties:          properties,
 		Required:            requiredFields,
 	}
+	if len(properties) == 0 {
+		schema.AdditionalProperties = false
+	}
+	return schema
 }
 
 func buildSchemaFromFields(
@@ -1490,7 +1504,7 @@ func buildSchemaFromFields(
 		}
 		properties[*field.Name] = propertySchema
 	}
-	return &OpenAPIV3Schema{
+	schema := &OpenAPIV3Schema{
 		Type:                "object",
 		Title:               title,
 		Description:         description,
@@ -1499,6 +1513,10 @@ func buildSchemaFromFields(
 		Properties:          properties,
 		Required:            requiredFields,
 	}
+	if len(properties) == 0 {
+		schema.AdditionalProperties = false
+	}
+	return schema
 }
 
 // Helper function to convert a protobuf field descriptor into an OpenAPI schema reference.
@@ -1526,6 +1544,13 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 		}
 		if example != nil {
 			schema.Example = example
+		}
+		if proto.HasExtension(field.Options, options.E_Openapiv3Field) {
+			if fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema); ok {
+				schema.Description = fieldExtension.Description
+				schema.MinItems = fieldExtension.MinItems
+				schema.MaxItems = fieldExtension.MaxItems
+			}
 		}
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
@@ -1971,6 +1996,13 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 		}
 		if example != nil {
 			schema.Example = example
+		}
+		if proto.HasExtension(field.Options, options.E_Openapiv3Field) {
+			if fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema); ok {
+				schema.Description = fieldExtension.Description
+				schema.MinItems = fieldExtension.MinItems
+				schema.MaxItems = fieldExtension.MaxItems
+			}
 		}
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
