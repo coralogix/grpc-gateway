@@ -978,3 +978,350 @@ func TestBuildSchemaFromFields_EmptyMessage_AdditionalPropertiesFalse(t *testing
 		t.Errorf("expected additionalProperties=false for empty message, got %v", schema.AdditionalProperties)
 	}
 }
+
+// makeRepeatedField builds a repeated scalar field without any extension.
+func makeRepeatedField(name string, fieldType descriptorpb.FieldDescriptorProto_Type) *descriptor.Field {
+	label := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	return &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:  proto.String(name),
+			Type:  &fieldType,
+			Label: &label,
+		},
+	}
+}
+
+// makeSingularFieldWithExtension builds a non-repeated scalar field with a JSONSchema extension.
+func makeSingularFieldWithExtension(name string, fieldType descriptorpb.FieldDescriptorProto_Type, ext *options.JSONSchema) *descriptor.Field {
+	opts := &descriptorpb.FieldOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	return &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:    proto.String(name),
+			Type:    &fieldType,
+			Label:   &label,
+			Options: opts,
+		},
+	}
+}
+
+// --- Fix 1: repeated-field array metadata ---
+
+// TestRepeatedField_NonReferences_DescriptionMinMaxOnArraySchema exercises
+// buildPropertySchemaFromField (the non-references variant) for the same three fields.
+func TestRepeatedField_NonReferences_DescriptionMinMaxOnArraySchema(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("items", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Description: "list of strings",
+		MinItems:    2,
+		MaxItems:    20,
+	})
+	reg := descriptor.NewRegistry()
+	schema := buildPropertySchemaFromField(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	if schema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	if schema.Type != "array" {
+		t.Fatalf("expected array schema, got %q", schema.Type)
+	}
+	if schema.Description != "list of strings" {
+		t.Errorf("expected description %q, got %q", "list of strings", schema.Description)
+	}
+	if schema.MinItems != 2 {
+		t.Errorf("expected minItems=2, got %d", schema.MinItems)
+	}
+	if schema.MaxItems != 20 {
+		t.Errorf("expected maxItems=20, got %d", schema.MaxItems)
+	}
+}
+
+// TestRepeatedField_ItemsSchemaStillPopulated verifies that adding description/minItems/maxItems
+// to the array wrapper does not destroy the Items sub-schema.
+func TestRepeatedField_ItemsSchemaStillPopulated(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("tags", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Description: "tags",
+		MinItems:    1,
+	})
+	reg := descriptor.NewRegistry()
+
+	t.Run("with-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.Items == nil {
+			t.Fatal("Items must not be nil after setting description/minItems on array")
+		}
+	})
+
+	t.Run("non-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaFromField(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.Items == nil {
+			t.Fatal("Items must not be nil after setting description/minItems on array")
+		}
+	})
+}
+
+// TestRepeatedField_NoExtension_ArrayMetadataIsZero checks that a repeated field with no
+// extension does not accidentally get non-zero description/minItems/maxItems.
+func TestRepeatedField_NoExtension_ArrayMetadataIsZero(t *testing.T) {
+	field := makeRepeatedField("values", descriptorpb.FieldDescriptorProto_TYPE_INT64)
+	reg := descriptor.NewRegistry()
+
+	t.Run("with-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.Description != "" {
+			t.Errorf("expected empty description, got %q", schema.Description)
+		}
+		if schema.MinItems != 0 {
+			t.Errorf("expected minItems=0, got %d", schema.MinItems)
+		}
+		if schema.MaxItems != 0 {
+			t.Errorf("expected maxItems=0, got %d", schema.MaxItems)
+		}
+	})
+
+	t.Run("non-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaFromField(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.Description != "" {
+			t.Errorf("expected empty description, got %q", schema.Description)
+		}
+		if schema.MinItems != 0 {
+			t.Errorf("expected minItems=0, got %d", schema.MinItems)
+		}
+		if schema.MaxItems != 0 {
+			t.Errorf("expected maxItems=0, got %d", schema.MaxItems)
+		}
+	})
+}
+
+// TestSingularField_ArrayMetadataNotApplied confirms non-repeated fields do not get
+// description/minItems/maxItems injected from the array-wrapper path.
+func TestSingularField_ArrayMetadataNotApplied(t *testing.T) {
+	field := makeSingularFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Description: "a name",
+		MinItems:    3,
+		MaxItems:    7,
+	})
+	reg := descriptor.NewRegistry()
+
+	t.Run("with-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.Type == "array" {
+			t.Error("singular field must not produce an array schema")
+		}
+		// MinItems/MaxItems on a scalar schema would be meaningless; they live on the item schema not array wrapper.
+		if schema.MinItems != 0 {
+			t.Errorf("singular field schema should have MinItems=0, got %d", schema.MinItems)
+		}
+		if schema.MaxItems != 0 {
+			t.Errorf("singular field schema should have MaxItems=0, got %d", schema.MaxItems)
+		}
+	})
+
+	t.Run("non-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaFromField(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.Type == "array" {
+			t.Error("singular field must not produce an array schema")
+		}
+	})
+}
+
+// TestRepeatedField_DescriptionOnly verifies that setting only description (no min/maxItems)
+// leaves min/maxItems at zero.
+func TestRepeatedField_DescriptionOnly(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("labels", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Description: "label list",
+	})
+	reg := descriptor.NewRegistry()
+	schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+	if schema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	if schema.Description != "label list" {
+		t.Errorf("expected %q, got %q", "label list", schema.Description)
+	}
+	if schema.MinItems != 0 {
+		t.Errorf("expected minItems=0 when only description set, got %d", schema.MinItems)
+	}
+	if schema.MaxItems != 0 {
+		t.Errorf("expected maxItems=0 when only description set, got %d", schema.MaxItems)
+	}
+}
+
+// TestRepeatedField_MinItemsOnly verifies that setting only minItems leaves description empty.
+func TestRepeatedField_MinItemsOnly(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("ids", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		MinItems: 5,
+	})
+	reg := descriptor.NewRegistry()
+	schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+	if schema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	if schema.MinItems != 5 {
+		t.Errorf("expected minItems=5, got %d", schema.MinItems)
+	}
+	if schema.Description != "" {
+		t.Errorf("expected empty description when only minItems set, got %q", schema.Description)
+	}
+	if schema.MaxItems != 0 {
+		t.Errorf("expected maxItems=0, got %d", schema.MaxItems)
+	}
+}
+
+// --- Fix 2: filterRequired ---
+
+// TestFilterRequired_EmptyRequired verifies that an empty required list is handled gracefully.
+func TestFilterRequired_EmptyRequired(t *testing.T) {
+	result := filterRequired([]string{}, map[string]*OpenAPIV3SchemaRef{"name": {}})
+	if len(result) != 0 {
+		t.Errorf("expected empty result for empty required, got %v", result)
+	}
+}
+
+// TestFilterRequired_NilRequired verifies that a nil required list returns a non-panic empty result.
+func TestFilterRequired_NilRequired(t *testing.T) {
+	result := filterRequired(nil, map[string]*OpenAPIV3SchemaRef{"name": {}})
+	if len(result) != 0 {
+		t.Errorf("expected empty result for nil required, got %v", result)
+	}
+}
+
+// TestFilterRequired_EmptyBodyProperties verifies that when no body properties exist,
+// all required fields are filtered out.
+func TestFilterRequired_EmptyBodyProperties(t *testing.T) {
+	result := filterRequired([]string{"id", "name"}, map[string]*OpenAPIV3SchemaRef{})
+	if len(result) != 0 {
+		t.Errorf("expected all fields filtered when body is empty, got %v", result)
+	}
+}
+
+// TestFilterRequired_NilBodyProperties verifies nil bodyProperties is safe (treats as empty).
+func TestFilterRequired_NilBodyProperties(t *testing.T) {
+	result := filterRequired([]string{"id"}, nil)
+	if len(result) != 0 {
+		t.Errorf("expected empty result for nil bodyProperties, got %v", result)
+	}
+}
+
+// TestFilterRequired_OrderPreserved verifies that the relative order of kept fields is preserved.
+func TestFilterRequired_OrderPreserved(t *testing.T) {
+	props := map[string]*OpenAPIV3SchemaRef{"b": {}, "d": {}}
+	result := filterRequired([]string{"a", "b", "c", "d", "e"}, props)
+	want := []string{"b", "d"}
+	if !slices.Equal(result, want) {
+		t.Errorf("expected order %v, got %v", want, result)
+	}
+}
+
+// --- Fix 3: empty-message additionalProperties ---
+
+// TestBuildSchemaFromFields_EmptyMessage_NonReferencesVariant tests buildSchemaFromFields
+// (the non-references variant) with nil fields.
+func TestBuildSchemaFromFields_EmptyMessage_NonReferencesVariant(t *testing.T) {
+	schema := buildSchemaFromFields(
+		nil,
+		map[string]*OpenAPIV3SchemaRef{},
+		nil,
+		"",
+		"",
+		nil,
+		nil,
+		map[string]string{},
+		descriptor.NewRegistry(),
+	)
+	if schema == nil {
+		t.Fatal("expected non-nil schema")
+	}
+	if schema.AdditionalProperties != false {
+		t.Errorf("expected additionalProperties=false for empty message (non-references), got %v", schema.AdditionalProperties)
+	}
+}
+
+// TestBuildSchemaFromFields_EmptySlice_AdditionalPropertiesFalse tests that an explicitly
+// empty (non-nil) slice of fields also triggers additionalProperties=false.
+func TestBuildSchemaFromFields_EmptySlice_AdditionalPropertiesFalse(t *testing.T) {
+	t.Run("with-references variant", func(t *testing.T) {
+		schema := buildSchemaFromFieldsWithReferences(
+			[]*descriptor.Field{},
+			descriptor.NewRegistry(),
+			nil, "", "", nil, nil,
+			map[string]string{},
+		)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.AdditionalProperties != false {
+			t.Errorf("expected additionalProperties=false for empty slice, got %v", schema.AdditionalProperties)
+		}
+	})
+
+	t.Run("non-references variant", func(t *testing.T) {
+		schema := buildSchemaFromFields(
+			[]*descriptor.Field{},
+			map[string]*OpenAPIV3SchemaRef{},
+			nil, "", "", nil, nil,
+			map[string]string{},
+			descriptor.NewRegistry(),
+		)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.AdditionalProperties != false {
+			t.Errorf("expected additionalProperties=false for empty slice, got %v", schema.AdditionalProperties)
+		}
+	})
+}
+
+// TestBuildSchemaFromFields_NonEmptyMessage_NoAdditionalPropertiesFalse verifies that a
+// message with at least one field does NOT get additionalProperties=false injected.
+func TestBuildSchemaFromFields_NonEmptyMessage_NoAdditionalPropertiesFalse(t *testing.T) {
+	field := makeRepeatedField("items", descriptorpb.FieldDescriptorProto_TYPE_STRING)
+
+	t.Run("with-references variant", func(t *testing.T) {
+		schema := buildSchemaFromFieldsWithReferences(
+			[]*descriptor.Field{field},
+			descriptor.NewRegistry(),
+			nil, "", "", nil, nil,
+			map[string]string{},
+		)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.AdditionalProperties == false {
+			t.Error("non-empty message must not have additionalProperties=false")
+		}
+	})
+
+	t.Run("non-references variant", func(t *testing.T) {
+		schema := buildSchemaFromFields(
+			[]*descriptor.Field{field},
+			map[string]*OpenAPIV3SchemaRef{},
+			nil, "", "", nil, nil,
+			map[string]string{},
+			descriptor.NewRegistry(),
+		)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.AdditionalProperties == false {
+			t.Error("non-empty message must not have additionalProperties=false")
+		}
+	})
+}
