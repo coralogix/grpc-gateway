@@ -745,8 +745,15 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 		}
 	}
 	applyInferredDiscriminatorFields(oneOfSchemas)
+
+	sortedBodyOneOfNames := make([]string, 0, len(oneOfSchemas))
+	for name := range oneOfSchemas {
+		sortedBodyOneOfNames = append(sortedBodyOneOfNames, name)
+	}
+	sort.Strings(sortedBodyOneOfNames)
+
 	oneOfSchemaRefs := []*OpenAPIV3SchemaRef{}
-	for combinationName := range oneOfSchemas {
+	for _, combinationName := range sortedBodyOneOfNames {
 		schemaRef := OpenAPIV3SchemaRef{
 			Ref: "#/components/schemas/" + combinationName,
 		}
@@ -1130,8 +1137,14 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 
 	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, resolvedNames[message.FQMN()], resolvedNames)
 
+	combinationNames := make([]string, 0, len(combinationsOfFieldsPartOfOneofGroups))
+	for name := range combinationsOfFieldsPartOfOneofGroups {
+		combinationNames = append(combinationNames, name)
+	}
+	sort.Strings(combinationNames)
+
 	oneOfSchemas := []*OpenAPIV3SchemaRef{}
-	for combinationName := range combinationsOfFieldsPartOfOneofGroups {
+	for _, combinationName := range combinationNames {
 		oneOfSchemas = append(oneOfSchemas, &OpenAPIV3SchemaRef{
 			Ref: "#/components/schemas/" + combinationName,
 		})
@@ -1228,8 +1241,14 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		}
 	}
 
+	sortedOneOfNames := make([]string, 0, len(oneOfSchemas))
+	for name := range oneOfSchemas {
+		sortedOneOfNames = append(sortedOneOfNames, name)
+	}
+	sort.Strings(sortedOneOfNames)
+
 	oneOfSchemaRefs := []*OpenAPIV3SchemaRef{}
-	for combinationName := range oneOfSchemas {
+	for _, combinationName := range sortedOneOfNames {
 		schemaRef := OpenAPIV3SchemaRef{
 			Ref: "#/components/schemas/" + combinationName,
 		}

@@ -3,6 +3,7 @@ package genopenapi
 import (
 	"log"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 
@@ -976,6 +977,53 @@ func TestBuildSchemaFromFields_EmptyMessage_AdditionalPropertiesFalse(t *testing
 	}
 	if schema.AdditionalProperties != false {
 		t.Errorf("expected additionalProperties=false for empty message, got %v", schema.AdditionalProperties)
+	}
+}
+
+// TestOneOfCombinationsStableOrder verifies that iterating the combinations map and
+// sorting produces a deterministic order regardless of Go's map randomisation
+// (fixes BUGV2-5805).
+func TestOneOfCombinationsStableOrder(t *testing.T) {
+	// Two oneof groups, two variants each → 4 CartesianProduct combinations.
+	oneofGroups := map[string][]*descriptor.Field{
+		"kind": {
+			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("alpha")}},
+			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("beta")}},
+		},
+		"mode": {
+			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("fast")}},
+			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("slow")}},
+		},
+	}
+
+	// Simulate what the fixed code does: collect names, sort, build slice.
+	collectSorted := func() []string {
+		combinations := generateOneOfCombinations(oneofGroups, "Msg")
+		names := make([]string, 0, len(combinations))
+		for name := range combinations {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		return names
+	}
+
+	first := collectSorted()
+	if len(first) != 4 {
+		t.Fatalf("expected 4 combinations, got %d", len(first))
+	}
+
+	// Run many times; all must produce the same order.
+	for i := 0; i < 100; i++ {
+		got := collectSorted()
+		if !slices.Equal(got, first) {
+			t.Fatalf("iteration %d produced different order:\n  want %v\n   got %v", i, first, got)
+		}
+	}
+
+	// Verify the expected names (proto field names, sorted alphabetically by combination name).
+	want := []string{"MsgAlphaFast", "MsgAlphaSlow", "MsgBetaFast", "MsgBetaSlow"}
+	if !slices.Equal(first, want) {
+		t.Errorf("unexpected combination names:\n  want %v\n   got %v", want, first)
 	}
 }
 
