@@ -902,49 +902,59 @@ func TestRepeatedField_MinMaxItemsOnArraySchema(t *testing.T) {
 	}
 }
 
-func TestFilterOutPathParams(t *testing.T) {
-	makeField := func(name string) *descriptor.Field {
-		return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String(name)}}
+func TestFilterRequired(t *testing.T) {
+	prop := func(names ...string) map[string]*OpenAPIV3SchemaRef {
+		m := make(map[string]*OpenAPIV3SchemaRef, len(names))
+		for _, n := range names {
+			m[n] = &OpenAPIV3SchemaRef{}
+		}
+		return m
 	}
 	tests := []struct {
-		name            string
-		required        []string
-		parameterFields []protoField
-		want            []string
+		name           string
+		required       []string
+		bodyProperties map[string]*OpenAPIV3SchemaRef
+		want           []string
 	}{
 		{
-			name:            "removes path param from required",
-			required:        []string{"id", "name", "status"},
-			parameterFields: []protoField{{FullPathToField: []string{"id"}, Field: makeField("id")}},
-			want:            []string{"name", "status"},
+			name:           "removes path param from required",
+			required:       []string{"id", "name", "status"},
+			bodyProperties: prop("name", "status"),
+			want:           []string{"name", "status"},
 		},
 		{
-			name:            "removes multiple path params",
-			required:        []string{"org_id", "resource_id", "name"},
-			parameterFields: []protoField{
-				{FullPathToField: []string{"org_id"}, Field: makeField("org_id")},
-				{FullPathToField: []string{"resource_id"}, Field: makeField("resource_id")},
-			},
-			want: []string{"name"},
+			name:           "removes multiple path params",
+			required:       []string{"org_id", "resource_id", "name"},
+			bodyProperties: prop("name"),
+			want:           []string{"name"},
 		},
 		{
-			name:            "no path params leaves required unchanged",
-			required:        []string{"name", "status"},
-			parameterFields: []protoField{},
-			want:            []string{"name", "status"},
+			name:           "no path params leaves required unchanged",
+			required:       []string{"name", "status"},
+			bodyProperties: prop("name", "status"),
+			want:           []string{"name", "status"},
 		},
 		{
-			name:            "all fields are path params yields empty required",
-			required:        []string{"id"},
-			parameterFields: []protoField{{FullPathToField: []string{"id"}, Field: makeField("id")}},
-			want:            []string{},
+			name:           "all fields are path params yields empty required",
+			required:       []string{"id"},
+			bodyProperties: prop(),
+			want:           []string{},
+		},
+		{
+			// Nested path param {resource.id}: leaf name "id" matches an unrelated
+			// top-level body field "id". That top-level "id" must stay in required
+			// because it is present in bodyProperties; only "resource" is absent.
+			name:           "nested path param does not remove unrelated top-level field with same leaf name",
+			required:       []string{"id", "resource"},
+			bodyProperties: prop("id"),
+			want:           []string{"id"},
 		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			got := filterOutPathParams(tc.required, tc.parameterFields)
+			got := filterRequired(tc.required, tc.bodyProperties)
 			if !slices.Equal(got, tc.want) {
-				t.Errorf("filterOutPathParams() = %v, want %v", got, tc.want)
+				t.Errorf("filterRequired() = %v, want %v", got, tc.want)
 			}
 		})
 	}

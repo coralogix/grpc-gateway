@@ -734,7 +734,7 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			schema := OpenAPIV3Schema{
 				Type:                "object",
 				Properties:          bodyProperties,
-				Required:            filterOutPathParams(bodyRepresentation.requiredFields, parameterFields),
+				Required:            filterRequired(bodyRepresentation.requiredFields, bodyProperties),
 				Title:               bodyRepresentation.title,
 				Description:         bodyRepresentation.description,
 				OpenAPIV3Extensions: bodyRepresentation.extensions,
@@ -920,14 +920,10 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 	}
 }
 
-func filterOutPathParams(required []string, parameterFields []protoField) []string {
-	paramNames := make(map[string]struct{}, len(parameterFields))
-	for _, pf := range parameterFields {
-		paramNames[*pf.Field.Name] = struct{}{}
-	}
+func filterRequired(required []string, bodyProperties map[string]*OpenAPIV3SchemaRef) []string {
 	result := make([]string, 0, len(required))
 	for _, r := range required {
-		if _, isParam := paramNames[r]; !isParam {
+		if _, exists := bodyProperties[r]; exists {
 			result = append(result, r)
 		}
 	}
