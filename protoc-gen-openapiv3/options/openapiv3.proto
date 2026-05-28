@@ -451,9 +451,6 @@ message Schema {
   string example = 6;
 }
 
-
-
-
 // `EnumSchema` is subset of fields from the OpenAPI v2 specification's Schema object.
 // Only fields that are applicable to Enums are included
 // See: https://github.com/OAI/OpenAPI-Specification/blob/3.0.0/versions/2.0.md#schemaObject
