@@ -1053,6 +1053,129 @@ func makeSingularFieldWithExtension(name string, fieldType descriptorpb.FieldDes
 	}
 }
 
+// newRequestBodyFixture builds an in-memory descriptor.Binding for buildRequestBody tests.
+// All fields are TYPE_STRING scalars. `required` is set on the message via
+// openapiv3_schema.json_schema.required. `pathParamNames` become path parameters on
+// the binding (they are valid field names from `fieldNames`).
+func newRequestBodyFixture(t *testing.T, fieldNames []string, required []string, pathParamNames []string) *descriptor.Binding {
+	t.Helper()
+
+	fieldDescriptors := make([]*descriptorpb.FieldDescriptorProto, 0, len(fieldNames))
+	for i, name := range fieldNames {
+		t := descriptorpb.FieldDescriptorProto_TYPE_STRING
+		l := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+		n := int32(i + 1)
+		fieldDescriptors = append(fieldDescriptors, &descriptorpb.FieldDescriptorProto{
+			Name:   proto.String(name),
+			Type:   &t,
+			Label:  &l,
+			Number: &n,
+		})
+	}
+
+	msgOptions := &descriptorpb.MessageOptions{}
+	if len(required) > 0 {
+		proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+			JsonSchema: &options.JSONSchema{Required: required},
+		})
+	}
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name:    proto.String("ReqMsg"),
+		Field:   fieldDescriptors,
+		Options: msgOptions,
+	}
+
+	msg := &descriptor.Message{DescriptorProto: msgDesc}
+	fields := make([]*descriptor.Field, 0, len(fieldDescriptors))
+	for _, fd := range fieldDescriptors {
+		fields = append(fields, &descriptor.Field{
+			FieldDescriptorProto: fd,
+			Message:              msg,
+		})
+	}
+	msg.Fields = fields
+
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("DoThing"),
+			InputType:  proto.String(".example.ReqMsg"),
+			OutputType: proto.String(".example.ReqMsg"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Body:       &descriptor.Body{},
+		Method:     method,
+	}
+
+	fieldByName := func(name string) *descriptor.Field {
+		for _, f := range fields {
+			if *f.Name == name {
+				return f
+			}
+		}
+		t.Fatalf("path param %q not in fields", name)
+		return nil
+	}
+	for _, name := range pathParamNames {
+		target := fieldByName(name)
+		binding.PathParams = append(binding.PathParams, descriptor.Parameter{
+			FieldPath: descriptor.FieldPath{{Name: name, Target: target}},
+			Target:    target,
+			Method:    method,
+		})
+	}
+
+	return binding
+}
+
+// TestBuildRequestBody_RequiredSetWhenBodyHasRequiredProperties verifies that
+// when the request body schema has required properties, requestBody.required
+// is set to true. This is the fix for ibm-no-required-properties-in-optional-body.
+func TestBuildRequestBody_RequiredSetWhenBodyHasRequiredProperties(t *testing.T) {
+	binding := newRequestBodyFixture(t, []string{"name", "kind"}, []string{"name"}, nil)
+	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if !body.Required {
+		t.Errorf("expected requestBody.required=true when body has required properties, got false")
+	}
+}
+
+// TestBuildRequestBody_RequiredFalseWhenNoRequiredProperties verifies the
+// negative case: no required fields → requestBody.required stays false (and
+// hence is omitted from JSON output).
+func TestBuildRequestBody_RequiredFalseWhenNoRequiredProperties(t *testing.T) {
+	binding := newRequestBodyFixture(t, []string{"name", "kind"}, nil, nil)
+	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if body.Required {
+		t.Errorf("expected requestBody.required=false when body has no required properties, got true")
+	}
+}
+
+// TestBuildRequestBody_RequiredFalseWhenOnlyPathParamRequired verifies the
+// regression case from PR#18: if the only required field is also a path
+// parameter, it is filtered out of the schema's required list, so
+// requestBody.required must NOT be set.
+func TestBuildRequestBody_RequiredFalseWhenOnlyPathParamRequired(t *testing.T) {
+	binding := newRequestBodyFixture(t, []string{"id", "name"}, []string{"id"}, []string{"id"})
+	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if body.Required {
+		t.Errorf("expected requestBody.required=false when only required field is a path param, got true")
+	}
+}
+
 // --- Fix 1: repeated-field array metadata ---
 
 // TestRepeatedField_NonReferences_DescriptionMinMaxOnArraySchema exercises

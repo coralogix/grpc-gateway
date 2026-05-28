@@ -785,9 +785,21 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 	if len(oneOfSchemas) > 1 {
 		schemasToAddToComponents = oneOfSchemas
 	}
+
+	// If any variant of the request body has required properties, the body
+	// itself must be required — an optional body cannot have required fields.
+	bodyRequired := false
+	for _, schema := range oneOfSchemas {
+		if schema.OpenAPIV3Schema != nil && len(schema.OpenAPIV3Schema.Required) > 0 {
+			bodyRequired = true
+			break
+		}
+	}
+
 	return &OpenAPIV3RequestBodyRef{
 		OpenAPIV3RequestBody: &OpenAPIV3RequestBody{
-			Content: bodyContent,
+			Content:  bodyContent,
+			Required: bodyRequired,
 		},
 	}, schemasToAddToComponents
 }
