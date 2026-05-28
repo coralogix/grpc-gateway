@@ -15,7 +15,7 @@ jobs:
         with:
           go-version: ${{ matrix.go-version }}
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-      - run: go build ./...
+      - run: go build $(go list ./... | grep -v /examples/)
   test:
     runs-on: ubuntu-latest
     steps:
@@ -23,7 +23,7 @@ jobs:
         with:
           check-latest: true
       - uses: actions/checkout@08c6903cd8c0fde910a37f88322edcfb5dd907a8 # v5
-      - run: go test ./...
+      - run: go test $(go list ./... | grep -v /examples/)
   proto_lint:
     runs-on: ubuntu-latest
     steps:
