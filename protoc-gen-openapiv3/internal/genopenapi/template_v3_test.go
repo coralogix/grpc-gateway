@@ -1177,8 +1177,6 @@ func TestBuildRequestBody_RequiredFalseWhenOnlyPathParamRequired(t *testing.T) {
 	}
 }
 
-// --- Fix: parameter description (Issue 9 / ibm-parameter-description) ---
-
 func TestFieldDescription(t *testing.T) {
 	t.Run("returns empty when field is nil", func(t *testing.T) {
 		if got := fieldDescription(nil); got != "" {
@@ -1305,8 +1303,7 @@ func newParamFixture(t *testing.T, fieldNames []string, pathParamNames []string,
 
 // TestBuildPathParameters_DescriptionFromFieldExtension verifies that
 // openapiv3_field.description on a proto field flows to the path
-// parameter's Description (the level the IBM rule inspects), not only the
-// parameter's Schema.Description.
+// parameter's Description, not only the parameter's Schema.Description.
 func TestBuildPathParameters_DescriptionFromFieldExtension(t *testing.T) {
 	binding := newParamFixture(t,
 		[]string{"id", "name"},
