@@ -525,6 +525,22 @@ func buildResponseBody(binding *descriptor.Binding, registry *descriptor.Registr
 	}
 }
 
+// fieldDescription reads openapiv3_field.description from a proto field so it
+// can be surfaced on the OpenAPI parameter (not only on the schema).
+func fieldDescription(field *descriptor.Field) string {
+	if field == nil || field.Options == nil {
+		return ""
+	}
+	if !proto.HasExtension(field.Options, options.E_Openapiv3Field) {
+		return ""
+	}
+	ext, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema)
+	if !ok || ext == nil {
+		return ""
+	}
+	return ext.Description
+}
+
 func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Registry, resolvedNames map[string]string) []OpenAPIV3ParameterRef {
 	parameterRefs := []OpenAPIV3ParameterRef{}
 	for _, param := range binding.PathParams {
@@ -543,10 +559,11 @@ func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Regis
 		if fieldOpenApiV3Schema != nil {
 			parameterRef := OpenAPIV3ParameterRef{
 				OpenAPIV3Parameter: &OpenAPIV3Parameter{
-					Name:     pathParamName,
-					In:       "path",
-					Required: true,
-					Schema:   fieldOpenApiV3Schema,
+					Name:        pathParamName,
+					In:          "path",
+					Required:    true,
+					Description: fieldDescription(field),
+					Schema:      fieldOpenApiV3Schema,
 				},
 			}
 			parameterRefs = append(parameterRefs, parameterRef)
@@ -609,10 +626,11 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 		if queryParameterSchema.Ref != "" {
 			parameterRef := OpenAPIV3ParameterRef{
 				OpenAPIV3Parameter: &OpenAPIV3Parameter{
-					Name:     *field.Name,
-					In:       "query",
-					Required: false,
-					Schema:   queryParameterSchema,
+					Name:        *field.Name,
+					In:          "query",
+					Required:    false,
+					Description: fieldDescription(field),
+					Schema:      queryParameterSchema,
 				},
 			}
 			parameterRefs = append(parameterRefs, parameterRef)
@@ -648,10 +666,11 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 		}
 		parameterRef := OpenAPIV3ParameterRef{
 			OpenAPIV3Parameter: &OpenAPIV3Parameter{
-				Name:     *field.Name,
-				In:       "query",
-				Required: false,
-				Schema:   queryParameterSchema,
+				Name:        *field.Name,
+				In:          "query",
+				Required:    false,
+				Description: fieldDescription(field),
+				Schema:      queryParameterSchema,
 			},
 		}
 		parameterRefs = append(parameterRefs, parameterRef)

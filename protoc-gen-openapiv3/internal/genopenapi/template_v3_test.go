@@ -11,6 +11,7 @@ import (
 	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/pluginpb"
 )
 
 // Mock descriptor.Field type to simulate a protobuf field
@@ -1173,6 +1174,209 @@ func TestBuildRequestBody_RequiredFalseWhenOnlyPathParamRequired(t *testing.T) {
 	}
 	if body.Required {
 		t.Errorf("expected requestBody.required=false when only required field is a path param, got true")
+	}
+}
+
+// --- Fix: parameter description (Issue 9 / ibm-parameter-description) ---
+
+func TestFieldDescription(t *testing.T) {
+	t.Run("returns empty when field is nil", func(t *testing.T) {
+		if got := fieldDescription(nil); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+	t.Run("returns empty when no options", func(t *testing.T) {
+		field := &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name: proto.String("foo"),
+		}}
+		if got := fieldDescription(field); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+	t.Run("returns empty when extension absent", func(t *testing.T) {
+		field := &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:    proto.String("foo"),
+			Options: &descriptorpb.FieldOptions{},
+		}}
+		if got := fieldDescription(field); got != "" {
+			t.Errorf("expected empty string, got %q", got)
+		}
+	})
+	t.Run("returns extension description", func(t *testing.T) {
+		opts := &descriptorpb.FieldOptions{}
+		proto.SetExtension(opts, options.E_Openapiv3Field, &options.JSONSchema{
+			Description: "the user id",
+		})
+		field := &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:    proto.String("id"),
+			Options: opts,
+		}}
+		if got := fieldDescription(field); got != "the user id" {
+			t.Errorf("expected %q, got %q", "the user id", got)
+		}
+	})
+}
+
+// newParamFixture builds a binding suitable for buildPathParameters tests.
+// `descriptions` maps field names to openapiv3_field.description values; absent
+// names get no extension.
+func newParamFixture(t *testing.T, fieldNames []string, pathParamNames []string, descriptions map[string]string) *descriptor.Binding {
+	t.Helper()
+
+	fieldDescriptors := make([]*descriptorpb.FieldDescriptorProto, 0, len(fieldNames))
+	for i, name := range fieldNames {
+		typ := descriptorpb.FieldDescriptorProto_TYPE_STRING
+		lbl := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+		num := int32(i + 1)
+		var fopts *descriptorpb.FieldOptions
+		if desc, ok := descriptions[name]; ok && desc != "" {
+			fopts = &descriptorpb.FieldOptions{}
+			proto.SetExtension(fopts, options.E_Openapiv3Field, &options.JSONSchema{
+				Description: desc,
+			})
+		}
+		fieldDescriptors = append(fieldDescriptors, &descriptorpb.FieldDescriptorProto{
+			Name:    proto.String(name),
+			Type:    &typ,
+			Label:   &lbl,
+			Number:  &num,
+			Options: fopts,
+		})
+	}
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name:  proto.String("ReqMsg"),
+		Field: fieldDescriptors,
+	}
+	file := &descriptor.File{
+		FileDescriptorProto: &descriptorpb.FileDescriptorProto{
+			Name:    proto.String("example.proto"),
+			Package: proto.String("example"),
+			Options: &descriptorpb.FileOptions{
+				GoPackage: proto.String("example.com/path/to/example;example"),
+			},
+		},
+	}
+	msg := &descriptor.Message{DescriptorProto: msgDesc, File: file}
+	fields := make([]*descriptor.Field, 0, len(fieldDescriptors))
+	for _, fd := range fieldDescriptors {
+		fields = append(fields, &descriptor.Field{
+			FieldDescriptorProto: fd,
+			Message:              msg,
+		})
+	}
+	msg.Fields = fields
+
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("DoThing"),
+			InputType:  proto.String(".example.ReqMsg"),
+			OutputType: proto.String(".example.ReqMsg"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+
+	binding := &descriptor.Binding{
+		HTTPMethod: "GET",
+		Method:     method,
+	}
+
+	fieldByName := func(name string) *descriptor.Field {
+		for _, f := range fields {
+			if *f.Name == name {
+				return f
+			}
+		}
+		t.Fatalf("path param %q not in fields", name)
+		return nil
+	}
+	for _, name := range pathParamNames {
+		target := fieldByName(name)
+		binding.PathParams = append(binding.PathParams, descriptor.Parameter{
+			FieldPath: descriptor.FieldPath{{Name: name, Target: target}},
+			Target:    target,
+			Method:    method,
+		})
+	}
+
+	return binding
+}
+
+// TestBuildPathParameters_DescriptionFromFieldExtension verifies that
+// openapiv3_field.description on a proto field flows to the path
+// parameter's Description (the level the IBM rule inspects), not only the
+// parameter's Schema.Description.
+func TestBuildPathParameters_DescriptionFromFieldExtension(t *testing.T) {
+	binding := newParamFixture(t,
+		[]string{"id", "name"},
+		[]string{"id"},
+		map[string]string{"id": "the user id"},
+	)
+	params := buildPathParameters(binding, descriptor.NewRegistry(), map[string]string{})
+	if len(params) != 1 {
+		t.Fatalf("expected 1 path parameter, got %d", len(params))
+	}
+	if got := params[0].Description; got != "the user id" {
+		t.Errorf("expected parameter.description=%q, got %q", "the user id", got)
+	}
+}
+
+// TestBuildPathParameters_NoDescriptionWhenFieldUnannotated verifies that
+// fields without the openapiv3_field extension produce parameters with an
+// empty Description (omitted in JSON).
+func TestBuildPathParameters_NoDescriptionWhenFieldUnannotated(t *testing.T) {
+	binding := newParamFixture(t,
+		[]string{"id"},
+		[]string{"id"},
+		nil,
+	)
+	params := buildPathParameters(binding, descriptor.NewRegistry(), map[string]string{})
+	if len(params) != 1 {
+		t.Fatalf("expected 1 path parameter, got %d", len(params))
+	}
+	if got := params[0].Description; got != "" {
+		t.Errorf("expected empty parameter.description, got %q", got)
+	}
+}
+
+// newQueryParamFixture is like newParamFixture but also loads the message
+// into a fresh registry, because buildQueryParameters does registry.LookupMsg
+// to find the request message.
+func newQueryParamFixture(t *testing.T, fieldNames []string, descriptions map[string]string) (*descriptor.Binding, *descriptor.Registry) {
+	t.Helper()
+	binding := newParamFixture(t, fieldNames, nil, descriptions)
+
+	file := binding.Method.RequestType.File
+	file.FileDescriptorProto.MessageType = []*descriptorpb.DescriptorProto{
+		binding.Method.RequestType.DescriptorProto,
+	}
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{
+		ProtoFile: []*descriptorpb.FileDescriptorProto{file.FileDescriptorProto},
+	}); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+	return binding, reg
+}
+
+// TestBuildQueryParameters_DescriptionFromFieldExtension covers the scalar
+// (non-enum) branch in buildQueryParameters.
+func TestBuildQueryParameters_DescriptionFromFieldExtension(t *testing.T) {
+	binding, reg := newQueryParamFixture(t,
+		[]string{"filter", "limit"},
+		map[string]string{"filter": "search filter expression"},
+	)
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	var got string
+	for _, p := range params {
+		if p.Name == "filter" {
+			got = p.Description
+			break
+		}
+	}
+	if got != "search filter expression" {
+		t.Errorf("expected parameter.description=%q, got %q", "search filter expression", got)
 	}
 }
 
