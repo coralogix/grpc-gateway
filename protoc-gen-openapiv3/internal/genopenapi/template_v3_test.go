@@ -1,6 +1,7 @@
 package genopenapi
 
 import (
+	"encoding/json"
 	"log"
 	"slices"
 	"sort"
@@ -1695,4 +1696,321 @@ func TestBuildSchemaFromFields_NonEmptyMessage_NoAdditionalPropertiesFalse(t *te
 			t.Error("non-empty message must not have additionalProperties=false")
 		}
 	})
+}
+
+// ---------------------------------------------------------------------------
+// Response.examples → OpenAPI v3 MediaType.example
+// ---------------------------------------------------------------------------
+//
+// Tests for the fix that propagates `openapiv3_operation.responses.examples`
+// (proto field 4) onto OpenAPI v3 `MediaType.example` for both success (200)
+// and non-success responses. This addresses the IBM Cloud OpenAPI ruleset's
+// `ibm-success-response-example` rule, which requires response bodies to
+// declare a media-type-level example.
+
+func TestMediaTypeExampleValue_JsonMimeWrapsAsRawExample(t *testing.T) {
+	got := mediaTypeExampleValue("application/json", `{"foo":"bar"}`)
+	raw, ok := got.(RawExample)
+	if !ok {
+		t.Fatalf("application/json: expected RawExample, got %T", got)
+	}
+	if string(raw) != `{"foo":"bar"}` {
+		t.Errorf("application/json: expected raw JSON preserved, got %q", string(raw))
+	}
+}
+
+func TestMediaTypeExampleValue_JsonSuffixWrapsAsRawExample(t *testing.T) {
+	cases := []string{"application/cloudevents+json", "application/vnd.api+json", "application/problem+json"}
+	for _, mime := range cases {
+		t.Run(mime, func(t *testing.T) {
+			got := mediaTypeExampleValue(mime, `{"ok":true}`)
+			if _, ok := got.(RawExample); !ok {
+				t.Errorf("%s: expected RawExample wrapping, got %T", mime, got)
+			}
+		})
+	}
+}
+
+func TestMediaTypeExampleValue_NonJsonMimeReturnsRawString(t *testing.T) {
+	cases := map[string]string{
+		"application/xml": "<foo>bar</foo>",
+		"text/plain":      "hello world",
+		"text/html":       "<p>hi</p>",
+	}
+	for mime, want := range cases {
+		t.Run(mime, func(t *testing.T) {
+			got := mediaTypeExampleValue(mime, want)
+			s, ok := got.(string)
+			if !ok {
+				t.Fatalf("%s: expected string, got %T", mime, got)
+			}
+			if s != want {
+				t.Errorf("%s: expected %q, got %q", mime, want, s)
+			}
+		})
+	}
+}
+
+func TestApplyResponseExamples_NilResponseIsNoop(t *testing.T) {
+	// Must not panic.
+	applyResponseExamples(nil, map[string]string{"application/json": `{"a":1}`})
+}
+
+func TestApplyResponseExamples_EmptyMapLeavesContentUnchanged(t *testing.T) {
+	resp := &OpenAPIV3Response{
+		Content: map[string]OpenAPIV3MediaType{
+			"application/json": {Schema: &OpenAPIV3SchemaRef{Ref: "#/components/schemas/Foo"}},
+		},
+	}
+	applyResponseExamples(resp, nil)
+	applyResponseExamples(resp, map[string]string{})
+
+	mt, ok := resp.Content["application/json"]
+	if !ok {
+		t.Fatal("expected application/json entry to still exist")
+	}
+	if mt.Example != nil {
+		t.Errorf("expected no Example to be set, got %v", mt.Example)
+	}
+	if mt.Schema == nil || mt.Schema.Ref != "#/components/schemas/Foo" {
+		t.Error("schema must be preserved when no examples are applied")
+	}
+}
+
+func TestApplyResponseExamples_NilContentMapIsCreated(t *testing.T) {
+	resp := &OpenAPIV3Response{}
+	applyResponseExamples(resp, map[string]string{"application/json": `{"k":"v"}`})
+
+	if resp.Content == nil {
+		t.Fatal("expected Content map to be created")
+	}
+	if _, ok := resp.Content["application/json"]; !ok {
+		t.Errorf("expected application/json entry to be created, got keys %v", keysOfContent(resp.Content))
+	}
+}
+
+func TestApplyResponseExamples_PreservesSchemaOnExistingEntry(t *testing.T) {
+	resp := &OpenAPIV3Response{
+		Content: map[string]OpenAPIV3MediaType{
+			"application/json": {Schema: &OpenAPIV3SchemaRef{Ref: "#/components/schemas/Foo"}},
+		},
+	}
+	applyResponseExamples(resp, map[string]string{"application/json": `{"id":1}`})
+
+	mt := resp.Content["application/json"]
+	if mt.Schema == nil || mt.Schema.Ref != "#/components/schemas/Foo" {
+		t.Error("existing schema must be preserved when example is set")
+	}
+	if mt.Example == nil {
+		t.Fatal("expected Example to be populated")
+	}
+	if _, ok := mt.Example.(RawExample); !ok {
+		t.Errorf("expected RawExample for application/json, got %T", mt.Example)
+	}
+}
+
+func TestApplyResponseExamples_AddsBrandNewMimeType(t *testing.T) {
+	resp := &OpenAPIV3Response{
+		Content: map[string]OpenAPIV3MediaType{
+			"application/json": {Schema: &OpenAPIV3SchemaRef{Ref: "#/components/schemas/Foo"}},
+		},
+	}
+	applyResponseExamples(resp, map[string]string{"application/xml": "<id>1</id>"})
+
+	if _, ok := resp.Content["application/json"]; !ok {
+		t.Error("existing application/json entry must be preserved")
+	}
+	xml, ok := resp.Content["application/xml"]
+	if !ok {
+		t.Fatalf("expected application/xml entry to be created, got keys %v", keysOfContent(resp.Content))
+	}
+	if xml.Example != "<id>1</id>" {
+		t.Errorf("expected raw string example for application/xml, got %v", xml.Example)
+	}
+}
+
+func TestApplyResponseExamples_MultipleMimeTypesAllSet(t *testing.T) {
+	resp := &OpenAPIV3Response{}
+	applyResponseExamples(resp, map[string]string{
+		"application/json": `{"a":1}`,
+		"application/xml":  "<a>1</a>",
+		"text/plain":       "a=1",
+	})
+
+	if len(resp.Content) != 3 {
+		t.Fatalf("expected 3 content entries, got %d (keys=%v)", len(resp.Content), keysOfContent(resp.Content))
+	}
+	if _, ok := resp.Content["application/json"].Example.(RawExample); !ok {
+		t.Errorf("application/json: expected RawExample, got %T", resp.Content["application/json"].Example)
+	}
+	if s, _ := resp.Content["application/xml"].Example.(string); s != "<a>1</a>" {
+		t.Errorf("application/xml: expected raw string, got %v", resp.Content["application/xml"].Example)
+	}
+	if s, _ := resp.Content["text/plain"].Example.(string); s != "a=1" {
+		t.Errorf("text/plain: expected raw string, got %v", resp.Content["text/plain"].Example)
+	}
+}
+
+func TestExtractOpenAPIV3ResponsesFromProtoExtension_EmitsExamplesForNonSuccess(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"404": {
+				Description: "Not Found",
+				Examples: map[string]string{
+					"application/json": `{"error":"not found","code":404}`,
+				},
+			},
+		},
+	}
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+
+	resp, ok := got["404"]
+	if !ok || resp.OpenAPIV3Response == nil {
+		t.Fatalf("expected 404 response, got keys %v", keysOfResponses(got))
+	}
+	if resp.Description != "Not Found" {
+		t.Errorf("expected description preserved, got %q", resp.Description)
+	}
+	mt, ok := resp.Content["application/json"]
+	if !ok {
+		t.Fatalf("expected application/json content, got keys %v", keysOfContent(resp.Content))
+	}
+	raw, ok := mt.Example.(RawExample)
+	if !ok {
+		t.Fatalf("expected RawExample on 404 application/json, got %T", mt.Example)
+	}
+	if string(raw) != `{"error":"not found","code":404}` {
+		t.Errorf("expected raw JSON preserved, got %q", string(raw))
+	}
+}
+
+func TestExtractOpenAPIV3ResponsesFromProtoExtension_NoExamplesLeavesContentEmpty(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"500": {Description: "Internal Server Error"},
+		},
+	}
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+
+	resp, ok := got["500"]
+	if !ok || resp.OpenAPIV3Response == nil {
+		t.Fatalf("expected 500 response, got keys %v", keysOfResponses(got))
+	}
+	mt, ok := resp.Content["application/json"]
+	if !ok {
+		t.Fatal("expected default application/json content entry to be created")
+	}
+	if mt.Example != nil {
+		t.Errorf("expected no Example when annotation has none, got %v", mt.Example)
+	}
+}
+
+// TestExtractOpenAPIV3ResponsesFromProtoExtension_SuccessStatusStillSkipped guards the
+// existing behavior that the 200 entry is not emitted here — the success response is
+// built downstream from the gRPC response type. The success-response examples are
+// merged in via applyResponseExamples at the call site, not from this function.
+func TestExtractOpenAPIV3ResponsesFromProtoExtension_SuccessStatusStillSkipped(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"200": {
+				Description: "OK",
+				Examples: map[string]string{
+					"application/json": `{"foo":"bar"}`,
+				},
+			},
+			"404": {Description: "Not Found"},
+		},
+	}
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	if _, ok := got["200"]; ok {
+		t.Error("200 response must not be emitted by extractOpenAPIV3ResponsesFromProtoExtension (success path is handled separately)")
+	}
+	if _, ok := got["404"]; !ok {
+		t.Error("404 response must still be emitted")
+	}
+}
+
+func TestExtractOpenAPIV3ResponsesFromProtoExtension_MultipleNonSuccessResponses(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"400": {
+				Description: "Bad Request",
+				Examples: map[string]string{
+					"application/json": `{"error":"bad request"}`,
+				},
+			},
+			"500": {Description: "Internal Server Error"}, // no examples
+		},
+	}
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	if len(got) != 2 {
+		t.Fatalf("expected 2 responses, got %d (keys=%v)", len(got), keysOfResponses(got))
+	}
+
+	if mt := got["400"].Content["application/json"]; mt.Example == nil {
+		t.Error("400 must have an example")
+	} else if _, ok := mt.Example.(RawExample); !ok {
+		t.Errorf("400 example: expected RawExample, got %T", mt.Example)
+	}
+
+	if mt := got["500"].Content["application/json"]; mt.Example != nil {
+		t.Errorf("500 must not have an example, got %v", mt.Example)
+	}
+}
+
+// TestMediaTypeExample_JsonRoundTripsAsJsonObject verifies that the rendered
+// OpenAPI v3 spec emits a JSON example object (not a stringified blob) for
+// application/json examples. This is the key behavior the IBM rule checks for.
+func TestMediaTypeExample_JsonRoundTripsAsJsonObject(t *testing.T) {
+	resp := &OpenAPIV3Response{}
+	applyResponseExamples(resp, map[string]string{
+		"application/json": `{"estimated_bytes":"13251739648","count":42}`,
+	})
+
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	// The example must appear as a JSON object literal, not a quoted string.
+	if !strings.Contains(string(raw), `"example":{"estimated_bytes":"13251739648","count":42}`) {
+		t.Errorf("application/json example must be emitted as a JSON object, got:\n%s", string(raw))
+	}
+}
+
+// TestMediaTypeExample_NonJsonRendersAsString verifies the symmetric behavior
+// for non-JSON mime types — the example is emitted as a JSON string.
+func TestMediaTypeExample_NonJsonRendersAsString(t *testing.T) {
+	resp := &OpenAPIV3Response{}
+	applyResponseExamples(resp, map[string]string{
+		"application/xml": "<root><id>1</id></root>",
+	})
+
+	raw, err := json.Marshal(resp)
+	if err != nil {
+		t.Fatalf("json.Marshal failed: %v", err)
+	}
+	if !strings.Contains(string(raw), `"example":"\u003croot\u003e\u003cid\u003e1\u003c/id\u003e\u003c/root\u003e"`) &&
+		!strings.Contains(string(raw), `"example":"<root><id>1</id></root>"`) {
+		t.Errorf("application/xml example must be emitted as a JSON string, got:\n%s", string(raw))
+	}
+}
+
+// keysOfContent and keysOfResponses produce deterministic key listings for
+// error messages.
+func keysOfContent(m map[string]OpenAPIV3MediaType) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func keysOfResponses(m OpenAPIV3Responses) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
