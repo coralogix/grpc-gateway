@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"log"
 	"maps"
-	"mime"
 	"sort"
 	"strconv"
 	"strings"
@@ -263,7 +262,6 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				externalDocs := &OpenAPIV3ExternalDocs{}
 				extensions := OpenAPIV3Extensions{}
 				var description string
-				var successResponseExamples map[string]string
 				if proto.HasExtension(m.Options, options.E_Openapiv3Operation) {
 					operation, ok := proto.GetExtension(m.Options, options.E_Openapiv3Operation).(*options.Operation)
 					if ok {
@@ -284,9 +282,6 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 							extensions[k] = v
 						}
 						responses = extractOpenAPIV3ResponsesFromProtoExtension(operation)
-						if successResp, ok := operation.GetResponses()[successStatusCode]; ok && successResp != nil {
-							successResponseExamples = successResp.GetExamples()
-						}
 						if operation.ExternalDocs != nil && operation.ExternalDocs.Description != "" && operation.ExternalDocs.Url != "" {
 							externalDocs = &OpenAPIV3ExternalDocs{
 								Description: operation.ExternalDocs.Description,
@@ -321,7 +316,6 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				responseBody := buildResponseBody(b, param.reg, resolvedNames)
 				if responseBody != nil {
 					responseBody.OpenAPIV3Response.Content["application/json"].Schema.OpenAPIV3Schema.CamelCase()
-					applyResponseExamples(responseBody.OpenAPIV3Response, successResponseExamples)
 				}
 				responses[successStatusCode] = *responseBody
 				op := &OpenAPIV3Operation{
@@ -447,14 +441,12 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 						},
 					}
 				}
-				respObj := &OpenAPIV3Response{
-					Description: response.Description,
-					Headers:     headers,
-					Content:     content,
-				}
-				applyResponseExamples(respObj, response.GetExamples())
 				responses[statusCode] = OpenAPIV3ResponseRef{
-					OpenAPIV3Response: respObj,
+					OpenAPIV3Response: &OpenAPIV3Response{
+						Description: response.Description,
+						Headers:     headers,
+						Content:     content,
+					},
 				}
 			} else {
 				// The 200 response is reserved for the main response body
@@ -463,56 +455,6 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 		}
 	}
 	return responses
-}
-
-// mediaTypeExampleValue converts a per-mime-type example string from the
-// openapiv3 Response.examples annotation into a value suitable for OpenAPI v3
-// MediaType.example. JSON-flavored mime types preserve the original JSON shape
-// via RawExample so generated specs round-trip the dev's annotated structure
-// (objects stay objects, numbers stay numbers, etc.). All other mime types are
-// emitted as plain strings. Behaves like protoc-gen-openapiv2's
-// openapiExamplesFromProtoExamples so v2 and v3 surface the same example data
-// for the same proto annotations.
-func mediaTypeExampleValue(mimeType, exampleStr string) interface{} {
-	if isJSONMediaType(mimeType) {
-		return RawExample(exampleStr)
-	}
-	return exampleStr
-}
-
-// isJSONMediaType returns true for application/json and any structured-syntax
-// suffix variant (RFC 6838 §4.2.8, e.g. application/problem+json,
-// application/cloudevents+json). Uses mime.ParseMediaType so casing and
-// charset/parameter suffixes don't matter — "Application/JSON" and
-// "application/json; charset=utf-8" both qualify, matching RFC 9110's
-// case-insensitive media-type semantics. Falls back to a literal lowercased
-// comparison on parse failure so a malformed-but-recognizable annotation
-// doesn't silently regress to "always string".
-func isJSONMediaType(mediaType string) bool {
-	parsed, _, err := mime.ParseMediaType(mediaType)
-	if err != nil {
-		parsed = strings.ToLower(strings.TrimSpace(mediaType))
-	}
-	return parsed == "application/json" || strings.HasSuffix(parsed, "+json")
-}
-
-// applyResponseExamples merges per-mime-type examples from a proto Response.examples
-// annotation onto an OpenAPI v3 response's content map. Existing content entries
-// keep their schema and get their Example set; mime types without an entry yet
-// (e.g. an "application/xml" annotation on a JSON-only response) get a fresh
-// entry created so the example is still surfaced.
-func applyResponseExamples(resp *OpenAPIV3Response, examples map[string]string) {
-	if resp == nil || len(examples) == 0 {
-		return
-	}
-	if resp.Content == nil {
-		resp.Content = make(map[string]OpenAPIV3MediaType)
-	}
-	for mimeType, exampleStr := range examples {
-		mt := resp.Content[mimeType]
-		mt.Example = mediaTypeExampleValue(mimeType, exampleStr)
-		resp.Content[mimeType] = mt
-	}
 }
 
 func buildTags(param param) ([]OpenAPIV3Tag, error) {
