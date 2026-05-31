@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"maps"
+	"mime"
 	"sort"
 	"strconv"
 	"strings"
@@ -469,14 +470,30 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 // MediaType.example. JSON-flavored mime types preserve the original JSON shape
 // via RawExample so generated specs round-trip the dev's annotated structure
 // (objects stay objects, numbers stay numbers, etc.). All other mime types are
-// emitted as plain strings. Mirrors protoc-gen-openapiv2's
+// emitted as plain strings. Behaves like protoc-gen-openapiv2's
 // openapiExamplesFromProtoExamples so v2 and v3 surface the same example data
 // for the same proto annotations.
 func mediaTypeExampleValue(mimeType, exampleStr string) interface{} {
-	if mimeType == "application/json" || strings.HasSuffix(mimeType, "+json") {
+	if isJSONMediaType(mimeType) {
 		return RawExample(exampleStr)
 	}
 	return exampleStr
+}
+
+// isJSONMediaType returns true for application/json and any structured-syntax
+// suffix variant (RFC 6838 §4.2.8, e.g. application/problem+json,
+// application/cloudevents+json). Uses mime.ParseMediaType so casing and
+// charset/parameter suffixes don't matter — "Application/JSON" and
+// "application/json; charset=utf-8" both qualify, matching RFC 9110's
+// case-insensitive media-type semantics. Falls back to a literal lowercased
+// comparison on parse failure so a malformed-but-recognizable annotation
+// doesn't silently regress to "always string".
+func isJSONMediaType(mediaType string) bool {
+	parsed, _, err := mime.ParseMediaType(mediaType)
+	if err != nil {
+		parsed = strings.ToLower(strings.TrimSpace(mediaType))
+	}
+	return parsed == "application/json" || strings.HasSuffix(parsed, "+json")
 }
 
 // applyResponseExamples merges per-mime-type examples from a proto Response.examples

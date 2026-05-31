@@ -1731,6 +1731,28 @@ func TestMediaTypeExampleValue_JsonSuffixWrapsAsRawExample(t *testing.T) {
 	}
 }
 
+func TestMediaTypeExampleValue_JsonMediaTypeWithParametersOrCasing(t *testing.T) {
+	// RFC 9110: media-type tokens are case-insensitive; charset/parameter
+	// suffixes are valid. All of these should still wrap as RawExample so the
+	// generated MediaType.example is a JSON object, not a quoted string.
+	cases := []string{
+		"application/json; charset=utf-8",
+		"Application/JSON",
+		"APPLICATION/JSON",
+		"application/problem+json; charset=utf-8",
+		"Application/Cloudevents+JSON",
+		"  application/json  ",
+	}
+	for _, mime := range cases {
+		t.Run(mime, func(t *testing.T) {
+			got := mediaTypeExampleValue(mime, `{"ok":true}`)
+			if _, ok := got.(RawExample); !ok {
+				t.Errorf("%q: expected RawExample wrapping, got %T (value=%v)", mime, got, got)
+			}
+		})
+	}
+}
+
 func TestMediaTypeExampleValue_NonJsonMimeReturnsRawString(t *testing.T) {
 	cases := map[string]string{
 		"application/xml": "<foo>bar</foo>",
