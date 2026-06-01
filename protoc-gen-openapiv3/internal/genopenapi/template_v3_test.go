@@ -899,9 +899,7 @@ func TestRepeatedField_MinMaxItemsOnArraySchema(t *testing.T) {
 	if schema == nil {
 		t.Fatal("expected non-nil schema")
 	}
-	if schema.MinItems != 1 {
-		t.Errorf("expected minItems=1, got %d", schema.MinItems)
-	}
+	wantMinItems(t, schema.MinItems, 1)
 	if schema.MaxItems != 10 {
 		t.Errorf("expected maxItems=10, got %d", schema.MaxItems)
 	}
@@ -1614,9 +1612,7 @@ func TestRepeatedField_NonReferences_DescriptionMinMaxOnArraySchema(t *testing.T
 	if schema.Description != "list of strings" {
 		t.Errorf("expected description %q, got %q", "list of strings", schema.Description)
 	}
-	if schema.MinItems != 2 {
-		t.Errorf("expected minItems=2, got %d", schema.MinItems)
-	}
+	wantMinItems(t, schema.MinItems, 2)
 	if schema.MaxItems != 20 {
 		t.Errorf("expected maxItems=20, got %d", schema.MaxItems)
 	}
@@ -1666,9 +1662,9 @@ func TestRepeatedField_NoExtension_ArrayMetadataIsZero(t *testing.T) {
 		if schema.Description != "" {
 			t.Errorf("expected empty description, got %q", schema.Description)
 		}
-		if schema.MinItems != 0 {
-			t.Errorf("expected minItems=0, got %d", schema.MinItems)
-		}
+		// Arrays always emit minItems (default 0), so an array with no
+		// min_items annotation carries minItems: 0.
+		wantMinItems(t, schema.MinItems, 0)
 		if schema.MaxItems != 0 {
 			t.Errorf("expected maxItems=0, got %d", schema.MaxItems)
 		}
@@ -1682,9 +1678,9 @@ func TestRepeatedField_NoExtension_ArrayMetadataIsZero(t *testing.T) {
 		if schema.Description != "" {
 			t.Errorf("expected empty description, got %q", schema.Description)
 		}
-		if schema.MinItems != 0 {
-			t.Errorf("expected minItems=0, got %d", schema.MinItems)
-		}
+		// Arrays always emit minItems (default 0), so an array with no
+		// min_items annotation carries minItems: 0.
+		wantMinItems(t, schema.MinItems, 0)
 		if schema.MaxItems != 0 {
 			t.Errorf("expected maxItems=0, got %d", schema.MaxItems)
 		}
@@ -1709,9 +1705,11 @@ func TestSingularField_ArrayMetadataNotApplied(t *testing.T) {
 		if schema.Type == "array" {
 			t.Error("singular field must not produce an array schema")
 		}
-		// MinItems/MaxItems on a scalar schema would be meaningless; they live on the item schema not array wrapper.
-		if schema.MinItems != 0 {
-			t.Errorf("singular field schema should have MinItems=0, got %d", schema.MinItems)
+		// MinItems/MaxItems on a scalar schema would be meaningless; the array
+		// default-emit applies only to array wrappers, so a singular field
+		// leaves MinItems unset (nil).
+		if schema.MinItems != nil {
+			t.Errorf("singular field schema should have no MinItems, got %d", *schema.MinItems)
 		}
 		if schema.MaxItems != 0 {
 			t.Errorf("singular field schema should have MaxItems=0, got %d", schema.MaxItems)
@@ -1743,9 +1741,8 @@ func TestRepeatedField_DescriptionOnly(t *testing.T) {
 	if schema.Description != "label list" {
 		t.Errorf("expected %q, got %q", "label list", schema.Description)
 	}
-	if schema.MinItems != 0 {
-		t.Errorf("expected minItems=0 when only description set, got %d", schema.MinItems)
-	}
+	// Arrays always emit minItems (default 0), even with only a description.
+	wantMinItems(t, schema.MinItems, 0)
 	if schema.MaxItems != 0 {
 		t.Errorf("expected maxItems=0 when only description set, got %d", schema.MaxItems)
 	}
@@ -1761,9 +1758,7 @@ func TestRepeatedField_MinItemsOnly(t *testing.T) {
 	if schema == nil {
 		t.Fatal("expected non-nil schema")
 	}
-	if schema.MinItems != 5 {
-		t.Errorf("expected minItems=5, got %d", schema.MinItems)
-	}
+	wantMinItems(t, schema.MinItems, 5)
 	if schema.Description != "" {
 		t.Errorf("expected empty description when only minItems set, got %q", schema.Description)
 	}
@@ -2533,7 +2528,7 @@ func assertStringIntSchema(t *testing.T, s *OpenAPIV3Schema, wantPattern string)
 	if s.Pattern != wantPattern {
 		t.Errorf("expected pattern %q, got %q", wantPattern, s.Pattern)
 	}
-	if s.Minimum != 0 || s.Maximum != 0 {
+	if s.Minimum != nil || s.Maximum != 0 {
 		t.Errorf("expected no numeric minimum/maximum on a string schema, got min=%v max=%v", s.Minimum, s.Maximum)
 	}
 	if s.ExclusiveMinimum || s.ExclusiveMaximum {
@@ -2570,7 +2565,7 @@ func TestStringInt_StrayNumericBoundsDoNotLeak(t *testing.T) {
 	})
 	withRefs, plain := inlineSchemasBothSwitches(t, field)
 	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
-		if s.Minimum != 0 || s.Maximum != 0 {
+		if s.Minimum != nil || s.Maximum != 0 {
 			t.Errorf("stray numeric bounds leaked onto string schema: min=%v max=%v", s.Minimum, s.Maximum)
 		}
 		if s.Type != "string" {
@@ -2831,5 +2826,168 @@ func TestStringInt_Int32AndUint32Unchanged(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// --- minItems:0 (arrays) and minimum:0 (unsigned ints) ---
+// proto3 cannot serialize an explicit 0 (zero-value scalar), and the schema
+// struct fields used omitempty, so a deliberate minItems:0 / minimum:0 was
+// dropped. MinItems/Minimum are now pointers and these defaults are emitted.
+// Partially unblocks ibm-array-attributes / ibm-integer-attributes (the
+// maxItems/maximum halves still can't be fabricated).
+
+// wantMinItems asserts an array schema emits minItems with the given value.
+func wantMinItems(t *testing.T, got *uint64, want uint64) {
+	t.Helper()
+	if got == nil {
+		t.Fatalf("expected minItems=%d to be emitted, got nil", want)
+	}
+	if *got != want {
+		t.Errorf("expected minItems=%d, got %d", want, *got)
+	}
+}
+
+func mustInlinePlain(t *testing.T, field *descriptor.Field) *OpenAPIV3Schema {
+	t.Helper()
+	ref, _ := buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, descriptor.NewRegistry())
+	if ref == nil || ref.OpenAPIV3Schema == nil {
+		t.Fatal("expected non-nil inline schema")
+	}
+	return ref.OpenAPIV3Schema
+}
+
+func TestMinItems_ArrayUnsetEmitsZero(t *testing.T) {
+	field := makeRepeatedField("tags", descriptorpb.FieldDescriptorProto_TYPE_STRING)
+	reg := descriptor.NewRegistry()
+	t.Run("withRefs", func(t *testing.T) {
+		s := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+		wantMinItems(t, s.MinItems, 0)
+		if s.MaxItems != 0 {
+			t.Errorf("maxItems must stay unset (0), got %d", s.MaxItems)
+		}
+	})
+	t.Run("plain", func(t *testing.T) {
+		s := buildPropertySchemaFromField(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+		wantMinItems(t, s.MinItems, 0)
+	})
+}
+
+func TestMinItems_ArrayExplicitNonZero(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("tags", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		MinItems: 3,
+		MaxItems: 9,
+	})
+	reg := descriptor.NewRegistry()
+	s := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+	wantMinItems(t, s.MinItems, 3)
+	if s.MaxItems != 9 {
+		t.Errorf("expected maxItems=9, got %d", s.MaxItems)
+	}
+}
+
+func TestMinimum_Uint32EmitsZeroByDefault(t *testing.T) {
+	field := makeSingularFieldWithExtension("count", descriptorpb.FieldDescriptorProto_TYPE_UINT32, &options.JSONSchema{})
+	reg := descriptor.NewRegistry()
+	withRefs, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, map[string]string{})
+	plain := mustInlinePlain(t, field)
+	for name, s := range map[string]*OpenAPIV3Schema{"withRefs": withRefs.OpenAPIV3Schema, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Type != "integer" {
+				t.Fatalf("expected type=integer, got %q", s.Type)
+			}
+			if s.Minimum == nil || *s.Minimum != 0 {
+				t.Errorf("expected minimum=0 to be emitted on an unsigned integer, got %v", s.Minimum)
+			}
+		})
+	}
+}
+
+func TestMinimum_Uint32OverrideRaisesFloor(t *testing.T) {
+	field := makeSingularFieldWithExtension("count", descriptorpb.FieldDescriptorProto_TYPE_UINT32, &options.JSONSchema{Minimum: 5})
+	s := mustInlinePlain(t, field)
+	if s.Minimum == nil || *s.Minimum != 5 {
+		t.Errorf("expected minimum=5 from override, got %v", s.Minimum)
+	}
+}
+
+func TestMinimum_SignedIntNoFabricatedMinimum(t *testing.T) {
+	// int64 now renders as type: string, so only int32 remains a signed integer
+	// schema; it must not get a fabricated minimum (proto3 can't express 0).
+	field := makeSingularFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_INT32, &options.JSONSchema{})
+	s := mustInlinePlain(t, field)
+	if s.Minimum != nil {
+		t.Errorf("signed int must not get a fabricated minimum, got %v", *s.Minimum)
+	}
+}
+
+func TestMinimum_UInt32ValueWrapperEmitsZero(t *testing.T) {
+	field := makeWrapperField("count", ".google.protobuf.UInt32Value", nil)
+	s := mustInlinePlain(t, field)
+	if s.Minimum == nil || *s.Minimum != 0 {
+		t.Errorf("expected UInt32Value wrapper to emit minimum=0, got %v", s.Minimum)
+	}
+}
+
+func TestMinimum_TopLevelUInt32ValueResponse_EmitsZero(t *testing.T) {
+	// A top-level UInt32Value RPC response is emitted straight from the
+	// well-known map (bypassing the field switch); cleanWellKnownResponseSchema
+	// must still emit minimum: 0 to match the field-level case.
+	mapped := wellKnownTypesToOpenAPIV3SchemaMapping[".google.protobuf.UInt32Value"]
+	s := cleanWellKnownResponseSchema(mapped, ".google.protobuf.UInt32Value")
+	if s.Type != "integer" {
+		t.Fatalf("expected type=integer, got %q", s.Type)
+	}
+	if s.Minimum == nil || *s.Minimum != 0 {
+		t.Errorf("expected minimum=0 on a top-level UInt32Value response, got %v", s.Minimum)
+	}
+	// Must not mutate the shared map entry.
+	if mapped.Minimum != nil {
+		t.Error("cleanWellKnownResponseSchema mutated the shared well-known map entry")
+	}
+}
+
+func TestMinZero_MarshalRoundTrip(t *testing.T) {
+	// A deliberate minItems:0 / minimum:0 must serialize (the whole point of the
+	// pointer change) and survive a marshal -> unmarshal -> marshal round-trip.
+	zeroU := uint64(0)
+	zeroF := float64(0)
+	schema := &OpenAPIV3Schema{Type: "array", MinItems: &zeroU, Minimum: &zeroF}
+
+	b, err := json.Marshal(schema)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"minItems":0`) {
+		t.Errorf("expected minItems:0 in output, got %s", b)
+	}
+	if !strings.Contains(string(b), `"minimum":0`) {
+		t.Errorf("expected minimum:0 in output, got %s", b)
+	}
+
+	var back OpenAPIV3Schema
+	if err := json.Unmarshal(b, &back); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if back.MinItems == nil || *back.MinItems != 0 {
+		t.Errorf("round-trip lost minItems:0, got %v", back.MinItems)
+	}
+	if back.Minimum == nil || *back.Minimum != 0 {
+		t.Errorf("round-trip lost minimum:0, got %v", back.Minimum)
+	}
+	b2, _ := json.Marshal(&back)
+	if string(b) != string(b2) {
+		t.Errorf("re-marshal not stable:\n  %s\n  %s", b, b2)
+	}
+}
+
+func TestMinZero_NilMinItemsOmitted(t *testing.T) {
+	// A non-array schema leaves MinItems nil, which must stay omitted.
+	schema := &OpenAPIV3Schema{Type: "string"}
+	b, _ := json.Marshal(schema)
+	if strings.Contains(string(b), "minItems") {
+		t.Errorf("expected no minItems for a nil pointer, got %s", b)
+	}
+	if strings.Contains(string(b), "minimum") {
+		t.Errorf("expected no minimum for a nil pointer, got %s", b)
 	}
 }
