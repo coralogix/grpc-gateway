@@ -1028,6 +1028,48 @@ func TestOneOfCombinationsStableOrder(t *testing.T) {
 	}
 }
 
+// serviceWithTag builds an in-memory descriptor.Service carrying an openapiv3 Tag
+// extension with the given tag name.
+func serviceWithTag(tagName string) *descriptor.Service {
+	opts := &descriptorpb.ServiceOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Tag, &options.Tag{Name: tagName})
+	return &descriptor.Service{
+		ServiceDescriptorProto: &descriptorpb.ServiceDescriptorProto{
+			Name:    proto.String(tagName + "Service"),
+			Options: opts,
+		},
+	}
+}
+
+func TestBuildTagsStableOrder(t *testing.T) {
+	// Tag names supplied in non-sorted order. buildTags collects them into a map,
+	// so without an explicit sort the result order is randomized by Go.
+	services := []*descriptor.Service{
+		serviceWithTag("Zebra"),
+		serviceWithTag("Alpha"),
+		serviceWithTag("Mango"),
+		serviceWithTag("Beta"),
+	}
+	p := param{File: &descriptor.File{Services: services}}
+
+	want := []string{"Alpha", "Beta", "Mango", "Zebra"}
+
+	// Run many times; every run must return the tags sorted by name.
+	for i := 0; i < 100; i++ {
+		tags, err := buildTags(p)
+		if err != nil {
+			t.Fatalf("iteration %d: buildTags returned error: %v", i, err)
+		}
+		got := make([]string, 0, len(tags))
+		for _, tag := range tags {
+			got = append(got, tag.Name)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("iteration %d: tags not sorted by name:\n  want %v\n   got %v", i, want, got)
+		}
+	}
+}
+
 // makeRepeatedField builds a repeated scalar field without any extension.
 func makeRepeatedField(name string, fieldType descriptorpb.FieldDescriptorProto_Type) *descriptor.Field {
 	label := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
