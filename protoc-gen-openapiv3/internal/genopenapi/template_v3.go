@@ -1894,7 +1894,10 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING {
 		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
-		if err == nil && constrainedExample != "\"\"" {
+		// Guard on the raw annotation: an absent one coerces to `""` and would
+		// fabricate example: "" (violating min_length), while still preserving a
+		// deliberate empty-string example. Keep in sync with buildPropertySchemaFromFieldType.
+		if err == nil && jsonExample != "" {
 			rawExample = RawExample(constrainedExample)
 		}
 		if isArrayOrMapElement {
@@ -1916,7 +1919,8 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BYTES {
 		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
-		if err == nil && constrainedExample != "\"\"" {
+		// See the TYPE_STRING note above: emit only when the annotation is present.
+		if err == nil && jsonExample != "" {
 			rawExample = RawExample(constrainedExample)
 		}
 		if isArrayOrMapElement {
@@ -2343,7 +2347,10 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING {
 		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
-		if err == nil && constrainedExample != "" {
+		// Guard on the raw annotation: an absent one coerces to `""` and would
+		// fabricate example: "" (violating min_length), while still preserving a
+		// deliberate empty-string example. Keep in sync with buildPropertySchemaWithReferencesFromFieldType.
+		if err == nil && jsonExample != "" {
 			rawExample = RawExample(constrainedExample)
 		}
 		if isArrayOrMapElement {
@@ -2365,7 +2372,8 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BYTES {
 		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
-		if err == nil && constrainedExample != "" {
+		// See the TYPE_STRING note above: emit only when the annotation is present.
+		if err == nil && jsonExample != "" {
 			rawExample = RawExample(constrainedExample)
 		}
 		if isArrayOrMapElement {

@@ -2306,8 +2306,7 @@ func TestExtractResponses_CustomResponseDescriptionOnly(t *testing.T) {
 	if resp.Description != "Not Found" {
 		t.Errorf("expected description %q, got %q", "Not Found", resp.Description)
 	}
-	// Description-only responses carry no schema in their content (the empty
-	// media type is the pre-existing behavior we must not regress).
+	// Description-only responses carry no schema in their content.
 	if media, ok := resp.Content["application/json"]; ok && media.Schema != nil {
 		t.Errorf("expected no schema on a description-only response, got %v", media.Schema)
 	}
@@ -2354,4 +2353,138 @@ func TestExtractResponses_SuccessStatusReserved(t *testing.T) {
 	if _, ok := responses["200"]; ok {
 		t.Error("expected the 200 response to be reserved for the main response body and skipped")
 	}
+}
+
+// makeFieldWithExtension builds a singular field carrying an openapiv3_field
+// extension; a nil ext attaches none.
+func makeFieldWithExtension(name string, fieldType descriptorpb.FieldDescriptorProto_Type, ext *options.JSONSchema) *descriptor.Field {
+	opts := &descriptorpb.FieldOptions{}
+	if ext != nil {
+		proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	}
+	return &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:    proto.String(name),
+			Type:    &fieldType,
+			Options: opts,
+		},
+	}
+}
+
+// exampleFromBothSwitches returns the emitted Example via both rendering
+// functions, so tests can assert they agree.
+func exampleFromBothSwitches(t *testing.T, field *descriptor.Field) (withRefs RawExample, plain RawExample) {
+	t.Helper()
+	reg := descriptor.NewRegistry()
+	refSchema, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, map[string]string{})
+	plainSchema, _ := buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	if refSchema == nil || refSchema.OpenAPIV3Schema == nil {
+		t.Fatal("buildPropertySchemaWithReferencesFromFieldType returned no inline schema")
+	}
+	if plainSchema == nil || plainSchema.OpenAPIV3Schema == nil {
+		t.Fatal("buildPropertySchemaFromFieldType returned no inline schema")
+	}
+	return refSchema.OpenAPIV3Schema.Example, plainSchema.OpenAPIV3Schema.Example
+}
+
+func TestExample_StringNoExample_OmitsExample(t *testing.T) {
+	field := makeFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, nil)
+	withRefs, plain := exampleFromBothSwitches(t, field)
+	if withRefs != nil {
+		t.Errorf("with-refs: expected no example, got %q", string(withRefs))
+	}
+	if plain != nil {
+		t.Errorf("plain: expected no example, got %q (fabricated empty example before the fix)", string(plain))
+	}
+}
+
+func TestExample_StringWithExplicitExample_EmittedVerbatim(t *testing.T) {
+	field := makeFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Example: "hello",
+	})
+	withRefs, plain := exampleFromBothSwitches(t, field)
+	const want = `"hello"`
+	if string(withRefs) != want {
+		t.Errorf("with-refs: expected example %s, got %q", want, string(withRefs))
+	}
+	if string(plain) != want {
+		t.Errorf("plain: expected example %s, got %q", want, string(plain))
+	}
+}
+
+func TestExample_StringMinLength1NoExample_NoViolation(t *testing.T) {
+	field := makeFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		MinLength: 1,
+	})
+	reg := descriptor.NewRegistry()
+	for _, tc := range []struct {
+		name   string
+		schema *OpenAPIV3SchemaRef
+	}{
+		{"withRefs", mustSchema(t, func() *OpenAPIV3SchemaRef {
+			s, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, map[string]string{})
+			return s
+		})},
+		{"plain", mustSchema(t, func() *OpenAPIV3SchemaRef {
+			s, _ := buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+			return s
+		})},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if tc.schema.OpenAPIV3Schema.MinLength != 1 {
+				t.Errorf("expected minLength=1, got %d", tc.schema.OpenAPIV3Schema.MinLength)
+			}
+			if ex := tc.schema.OpenAPIV3Schema.Example; ex != nil {
+				t.Errorf("expected no example (empty example would violate minLength:1), got %q", string(ex))
+			}
+		})
+	}
+}
+
+func TestExample_BytesNoExample_OmitsExample(t *testing.T) {
+	field := makeFieldWithExtension("blob", descriptorpb.FieldDescriptorProto_TYPE_BYTES, nil)
+	withRefs, plain := exampleFromBothSwitches(t, field)
+	if withRefs != nil {
+		t.Errorf("with-refs: expected no example, got %q", string(withRefs))
+	}
+	if plain != nil {
+		t.Errorf("plain: expected no example, got %q", string(plain))
+	}
+}
+
+// An empty Example field means no annotation was set: emit no example.
+func TestExample_StringEmptyExampleField_TreatedAsAbsent(t *testing.T) {
+	field := makeFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Example: "",
+	})
+	withRefs, plain := exampleFromBothSwitches(t, field)
+	if withRefs != nil || plain != nil {
+		t.Errorf("expected empty example field to be treated as absent; got with-refs=%q plain=%q",
+			string(withRefs), string(plain))
+	}
+}
+
+// A deliberate empty-string example (JSON literal `""`) is distinct from an
+// absent annotation and must be preserved.
+func TestExample_StringDeliberateEmptyStringExample_Preserved(t *testing.T) {
+	field := makeFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Example: `""`,
+	})
+	withRefs, plain := exampleFromBothSwitches(t, field)
+	const want = `""`
+	if string(withRefs) != want {
+		t.Errorf("with-refs: expected deliberate empty-string example %s, got %q", want, string(withRefs))
+	}
+	if string(plain) != want {
+		t.Errorf("plain: expected deliberate empty-string example %s, got %q", want, string(plain))
+	}
+}
+
+func mustSchema(t *testing.T, fn func() *OpenAPIV3SchemaRef) *OpenAPIV3SchemaRef {
+	t.Helper()
+	s := fn()
+	if s == nil || s.OpenAPIV3Schema == nil {
+		t.Fatal("expected non-nil inline schema")
+	}
+	return s
 }
