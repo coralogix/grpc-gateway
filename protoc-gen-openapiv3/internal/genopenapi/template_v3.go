@@ -541,6 +541,12 @@ func buildTags(param param) ([]OpenAPIV3Tag, error) {
 	for _, tag := range openApiV3TagSet {
 		openapiV3Tags = append(openapiV3Tags, tag)
 	}
+	// Sort tags by name so the generated spec is deterministic: the tags are
+	// collected into a map above, and Go randomizes map iteration order, which
+	// would otherwise shuffle the top-level `tags` array on every generation.
+	slices.SortFunc(openapiV3Tags, func(a, b OpenAPIV3Tag) int {
+		return strings.Compare(a.Name, b.Name)
+	})
 	return openapiV3Tags, nil
 }
 

@@ -2,6 +2,7 @@ package genopenapi
 
 import (
 	"encoding/json"
+	"fmt"
 	"log"
 	"slices"
 	"sort"
@@ -10,6 +11,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
+	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
 	"google.golang.org/protobuf/types/pluginpb"
@@ -1026,6 +1028,219 @@ func TestOneOfCombinationsStableOrder(t *testing.T) {
 	if !slices.Equal(first, want) {
 		t.Errorf("unexpected combination names:\n  want %v\n   got %v", want, first)
 	}
+}
+
+// serviceWithTag builds an in-memory descriptor.Service carrying an openapiv3 Tag
+// extension with the given tag name.
+func serviceWithTag(tagName string) *descriptor.Service {
+	opts := &descriptorpb.ServiceOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Tag, &options.Tag{Name: tagName})
+	return &descriptor.Service{
+		ServiceDescriptorProto: &descriptorpb.ServiceDescriptorProto{
+			Name:    proto.String(tagName + "Service"),
+			Options: opts,
+		},
+	}
+}
+
+func TestBuildTagsStableOrder(t *testing.T) {
+	// Tag names supplied in non-sorted order. buildTags collects them into a map,
+	// so without an explicit sort the result order is randomized by Go.
+	services := []*descriptor.Service{
+		serviceWithTag("Zebra"),
+		serviceWithTag("Alpha"),
+		serviceWithTag("Mango"),
+		serviceWithTag("Beta"),
+	}
+	p := param{File: &descriptor.File{Services: services}}
+
+	want := []string{"Alpha", "Beta", "Mango", "Zebra"}
+
+	// Run many times; every run must return the tags sorted by name.
+	for i := 0; i < 100; i++ {
+		tags, err := buildTags(p)
+		if err != nil {
+			t.Fatalf("iteration %d: buildTags returned error: %v", i, err)
+		}
+		got := make([]string, 0, len(tags))
+		for _, tag := range tags {
+			got = append(got, tag.Name)
+		}
+		if !slices.Equal(got, want) {
+			t.Fatalf("iteration %d: tags not sorted by name:\n  want %v\n   got %v", i, want, got)
+		}
+	}
+}
+
+// deterministicSpecRequest is a CodeGeneratorRequest exercising the parts of the
+// generated spec that are assembled from Go maps (and were therefore at risk of
+// nondeterministic ordering): multiple services -> multiple tags, multiple RPCs
+// with HTTP bindings -> multiple paths, and several messages (incl. an enum,
+// nested and repeated fields) -> multiple component schemas. Two files are merged
+// so the cross-file merge path is covered too.
+const deterministicSpecRequest = `
+file_to_generate: "petstore/v1/pets.proto"
+file_to_generate: "store/v1/store.proto"
+proto_file: {
+  name: "petstore/v1/pets.proto"
+  package: "petstore.v1"
+  message_type: {
+    name: "Pet"
+    field: { name: "id" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "id" }
+    field: { name: "name" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "name" }
+    field: { name: "status" number: 3 label: LABEL_OPTIONAL type: TYPE_ENUM type_name: ".petstore.v1.PetStatus" json_name: "status" }
+    field: { name: "category" number: 4 label: LABEL_OPTIONAL type: TYPE_MESSAGE type_name: ".petstore.v1.Category" json_name: "category" }
+  }
+  message_type: {
+    name: "Category"
+    field: { name: "id" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "id" }
+    field: { name: "name" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "name" }
+  }
+  message_type: {
+    name: "ListPetsRequest"
+    field: { name: "page_size" number: 1 label: LABEL_OPTIONAL type: TYPE_INT32 json_name: "pageSize" }
+    field: { name: "page_token" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "pageToken" }
+  }
+  message_type: {
+    name: "ListPetsResponse"
+    field: { name: "pets" number: 1 label: LABEL_REPEATED type: TYPE_MESSAGE type_name: ".petstore.v1.Pet" json_name: "pets" }
+  }
+  message_type: {
+    name: "GetPetRequest"
+    field: { name: "id" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "id" }
+  }
+  message_type: {
+    name: "CreatePetRequest"
+    field: { name: "pet" number: 1 label: LABEL_OPTIONAL type: TYPE_MESSAGE type_name: ".petstore.v1.Pet" json_name: "pet" }
+  }
+  message_type: {
+    name: "DeletePetRequest"
+    field: { name: "id" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "id" }
+  }
+  enum_type: {
+    name: "PetStatus"
+    value: { name: "PET_STATUS_UNSPECIFIED" number: 0 }
+    value: { name: "AVAILABLE" number: 1 }
+    value: { name: "SOLD" number: 2 }
+  }
+  service: {
+    name: "PetService"
+    method: { name: "ListPets" input_type: ".petstore.v1.ListPetsRequest" output_type: ".petstore.v1.ListPetsResponse" options: { [google.api.http]: { get: "/v1/pets" } } }
+    method: { name: "GetPet" input_type: ".petstore.v1.GetPetRequest" output_type: ".petstore.v1.Pet" options: { [google.api.http]: { get: "/v1/pets/{id}" } } }
+    method: { name: "CreatePet" input_type: ".petstore.v1.CreatePetRequest" output_type: ".petstore.v1.Pet" options: { [google.api.http]: { post: "/v1/pets" body: "pet" } } }
+    method: { name: "DeletePet" input_type: ".petstore.v1.DeletePetRequest" output_type: ".petstore.v1.Pet" options: { [google.api.http]: { delete: "/v1/pets/{id}" } } }
+    options: { [grpc.gateway.protoc_gen_openapiv3.options.openapiv3_tag]: { name: "Pets" } }
+  }
+  options: { go_package: "example.com/petstore/v1;petstorev1" }
+  syntax: "proto3"
+}
+proto_file: {
+  name: "store/v1/store.proto"
+  package: "store.v1"
+  message_type: {
+    name: "Order"
+    field: { name: "id" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "id" }
+    field: { name: "pet_id" number: 2 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "petId" }
+    field: { name: "quantity" number: 3 label: LABEL_OPTIONAL type: TYPE_INT32 json_name: "quantity" }
+  }
+  message_type: {
+    name: "GetOrderRequest"
+    field: { name: "id" number: 1 label: LABEL_OPTIONAL type: TYPE_STRING json_name: "id" }
+  }
+  message_type: {
+    name: "ListOrdersResponse"
+    field: { name: "orders" number: 1 label: LABEL_REPEATED type: TYPE_MESSAGE type_name: ".store.v1.Order" json_name: "orders" }
+  }
+  service: {
+    name: "StoreService"
+    method: { name: "GetOrder" input_type: ".store.v1.GetOrderRequest" output_type: ".store.v1.Order" options: { [google.api.http]: { get: "/v1/store/orders/{id}" } } }
+    method: { name: "ListOrders" input_type: ".store.v1.GetOrderRequest" output_type: ".store.v1.ListOrdersResponse" options: { [google.api.http]: { get: "/v1/store/orders" } } }
+    options: { [grpc.gateway.protoc_gen_openapiv3.options.openapiv3_tag]: { name: "Store" } }
+  }
+  options: { go_package: "example.com/store/v1;storev1" }
+  syntax: "proto3"
+}
+`
+
+// generateMergedSpec builds a fresh registry from req and runs the full generator
+// pipeline (merge + path sort + JSON encode), returning the merged spec bytes.
+// A fresh registry is used per call so the whole pipeline is re-exercised.
+func generateMergedSpec(t *testing.T, reqText string) string {
+	t.Helper()
+	var req pluginpb.CodeGeneratorRequest
+	if err := prototext.Unmarshal([]byte(reqText), &req); err != nil {
+		t.Fatalf("prototext.Unmarshal: %v", err)
+	}
+	reg := descriptor.NewRegistry()
+	reg.SetAllowMerge(true)
+	reg.SetMergeFileName("apidocs")
+	// AddErrorDefs registers google.rpc.Status (used for error responses) and must
+	// run before Load, mirroring the plugin's main().
+	if err := AddErrorDefs(reg); err != nil {
+		t.Fatalf("AddErrorDefs: %v", err)
+	}
+	if err := reg.Load(&req); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+	var targets []*descriptor.File
+	for _, name := range req.GetFileToGenerate() {
+		f, err := reg.LookupFile(name)
+		if err != nil {
+			t.Fatalf("reg.LookupFile(%q): %v", name, err)
+		}
+		targets = append(targets, f)
+	}
+	g := New(reg, FormatJSON)
+	resp, err := g.Generate(targets)
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	if len(resp) != 1 {
+		t.Fatalf("expected 1 merged spec file, got %d", len(resp))
+	}
+	return resp[0].GetContent()
+}
+
+// TestGeneratedSpecIsDeterministic asserts the same protos produce the exact same
+// OpenAPI spec on every generation — byte-for-byte, across the whole document
+// (paths, schemas, tags, everything), not just the tags array.
+func TestGeneratedSpecIsDeterministic(t *testing.T) {
+	want := generateMergedSpec(t, deterministicSpecRequest)
+
+	// Guard against a degenerate fixture: the assertion is only meaningful if the
+	// spec actually contains the map-ordered sections we care about.
+	for _, probe := range []string{`"paths"`, `"tags"`, "/v1/pets", "/v1/store/orders", `"Pets"`, `"Store"`, "PetStatus"} {
+		if !strings.Contains(want, probe) {
+			t.Fatalf("fixture too thin: generated spec does not contain %q", probe)
+		}
+	}
+
+	for i := 0; i < 50; i++ {
+		got := generateMergedSpec(t, deterministicSpecRequest)
+		if got != want {
+			t.Fatalf("iteration %d: generated spec is not deterministic.\n%s", i, firstLineDiff(want, got))
+		}
+	}
+}
+
+// firstLineDiff returns a short, human-readable description of the first line at
+// which a and b differ, to make determinism failures easy to diagnose.
+func firstLineDiff(a, b string) string {
+	la := strings.Split(a, "\n")
+	lb := strings.Split(b, "\n")
+	n := len(la)
+	if len(lb) < n {
+		n = len(lb)
+	}
+	for i := 0; i < n; i++ {
+		if la[i] != lb[i] {
+			return fmt.Sprintf("first diff at line %d:\n  first: %s\n  later: %s", i+1, la[i], lb[i])
+		}
+	}
+	if len(la) != len(lb) {
+		return fmt.Sprintf("specs differ in length: first has %d lines, later has %d lines", len(la), len(lb))
+	}
+	return "specs differ but no line-level difference found"
 }
 
 // makeRepeatedField builds a repeated scalar field without any extension.
