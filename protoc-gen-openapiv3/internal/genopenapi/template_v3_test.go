@@ -2251,3 +2251,107 @@ func keysOfResponses(m OpenAPIV3Responses) []string {
 	sort.Strings(keys)
 	return keys
 }
+
+func responseWithRefSchema(description, ref string) *options.Response {
+	return &options.Response{
+		Description: description,
+		Schema: &options.Schema{
+			JsonSchema: &options.JSONSchema{Ref: ref},
+		},
+	}
+}
+
+func TestExtractResponses_CustomResponseCarriesRefSchema(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"201": responseWithRefSchema("Created", "CreateFooResponse"),
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+
+	resp, ok := responses["201"]
+	if !ok {
+		t.Fatal("expected a 201 response")
+	}
+	if resp.OpenAPIV3Response == nil {
+		t.Fatal("expected non-nil response body")
+	}
+	if resp.Description != "Created" {
+		t.Errorf("expected description %q, got %q", "Created", resp.Description)
+	}
+	media, ok := resp.Content["application/json"]
+	if !ok {
+		t.Fatal("expected application/json content on the 201 response")
+	}
+	if media.Schema == nil {
+		t.Fatal("expected the 201 response content to carry a schema (was dropped before the fix)")
+	}
+	if want := "#/components/schemas/CreateFooResponse"; media.Schema.Ref != want {
+		t.Errorf("expected schema $ref %q, got %q", want, media.Schema.Ref)
+	}
+}
+
+func TestExtractResponses_CustomResponseDescriptionOnly(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"404": {Description: "Not Found"},
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+
+	resp, ok := responses["404"]
+	if !ok {
+		t.Fatal("expected a 404 response")
+	}
+	if resp.Description != "Not Found" {
+		t.Errorf("expected description %q, got %q", "Not Found", resp.Description)
+	}
+	// Description-only responses carry no schema in their content (the empty
+	// media type is the pre-existing behavior we must not regress).
+	if media, ok := resp.Content["application/json"]; ok && media.Schema != nil {
+		t.Errorf("expected no schema on a description-only response, got %v", media.Schema)
+	}
+}
+
+func TestExtractResponses_MultipleCustomResponsesEachCarrySchema(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"201": responseWithRefSchema("Created", "CreateFooResponse"),
+			"202": responseWithRefSchema("Accepted", "AcceptFooResponse"),
+			"409": {Description: "Conflict"},
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+
+	for code, wantRef := range map[string]string{
+		"201": "#/components/schemas/CreateFooResponse",
+		"202": "#/components/schemas/AcceptFooResponse",
+	} {
+		resp, ok := responses[code]
+		if !ok {
+			t.Fatalf("expected a %s response", code)
+		}
+		media, ok := resp.Content["application/json"]
+		if !ok || media.Schema == nil {
+			t.Fatalf("expected %s response to carry a schema", code)
+		}
+		if media.Schema.Ref != wantRef {
+			t.Errorf("%s: expected schema $ref %q, got %q", code, wantRef, media.Schema.Ref)
+		}
+	}
+	if media, ok := responses["409"].Content["application/json"]; ok && media.Schema != nil {
+		t.Errorf("expected no schema on description-only 409, got %v", media.Schema)
+	}
+}
+
+func TestExtractResponses_SuccessStatusReserved(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"200": responseWithRefSchema("OK", "GetFooResponse"),
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	if _, ok := responses["200"]; ok {
+		t.Error("expected the 200 response to be reserved for the main response body and skipped")
+	}
+}

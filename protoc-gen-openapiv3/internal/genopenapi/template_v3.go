@@ -420,7 +420,7 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 				var content map[string]OpenAPIV3MediaType
 				if response.Schema != nil && response.Schema.JsonSchema != nil && response.Schema.JsonSchema.Ref != "" {
 					ref = "#/components/schemas/" + response.Schema.JsonSchema.Ref
-					content := make(map[string]OpenAPIV3MediaType)
+					content = make(map[string]OpenAPIV3MediaType)
 					content["application/json"] = OpenAPIV3MediaType{
 						Schema: &OpenAPIV3SchemaRef{
 							Ref: ref,
