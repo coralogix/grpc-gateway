@@ -2488,3 +2488,348 @@ func mustSchema(t *testing.T, fn func() *OpenAPIV3SchemaRef) *OpenAPIV3SchemaRef
 	}
 	return s
 }
+
+// wrapper type (e.g. ".google.protobuf.Int64Value").
+func makeWrapperField(name, typeName string, ext *options.JSONSchema) *descriptor.Field {
+	opts := &descriptorpb.FieldOptions{}
+	if ext != nil {
+		proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	}
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	return &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String(name),
+			Type:     &msgType,
+			TypeName: proto.String(typeName),
+			Options:  opts,
+		},
+	}
+}
+
+// inlineSchemasBothSwitches returns the inline schema produced by both
+// near-duplicate field-rendering functions so a test can assert they agree.
+func inlineSchemasBothSwitches(t *testing.T, field *descriptor.Field) (withRefs *OpenAPIV3Schema, plain *OpenAPIV3Schema) {
+	t.Helper()
+	reg := descriptor.NewRegistry()
+	a, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, map[string]string{})
+	b, _ := buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	if a == nil || a.OpenAPIV3Schema == nil {
+		t.Fatal("buildPropertySchemaWithReferencesFromFieldType returned no inline schema")
+	}
+	if b == nil || b.OpenAPIV3Schema == nil {
+		t.Fatal("buildPropertySchemaFromFieldType returned no inline schema")
+	}
+	return a.OpenAPIV3Schema, b.OpenAPIV3Schema
+}
+
+func assertStringIntSchema(t *testing.T, s *OpenAPIV3Schema, wantPattern string) {
+	t.Helper()
+	if s.Type != "string" {
+		t.Errorf("expected type=string, got %q", s.Type)
+	}
+	if s.Format != "" {
+		t.Errorf("expected no format (int64/uint64 is not a valid string format), got %q", s.Format)
+	}
+	if s.Pattern != wantPattern {
+		t.Errorf("expected pattern %q, got %q", wantPattern, s.Pattern)
+	}
+	if s.Minimum != 0 || s.Maximum != 0 {
+		t.Errorf("expected no numeric minimum/maximum on a string schema, got min=%v max=%v", s.Minimum, s.Maximum)
+	}
+	if s.ExclusiveMinimum || s.ExclusiveMaximum {
+		t.Errorf("expected no exclusive bounds on a string schema")
+	}
+}
+
+func TestStringInt_ScalarTypes_DefaultPatterns(t *testing.T) {
+	cases := []struct {
+		name        string
+		fieldType   descriptorpb.FieldDescriptorProto_Type
+		wantPattern string
+	}{
+		{"uint64", descriptorpb.FieldDescriptorProto_TYPE_UINT64, "^[0-9]+$"},
+		{"fixed64", descriptorpb.FieldDescriptorProto_TYPE_FIXED64, "^[0-9]+$"},
+		{"int64", descriptorpb.FieldDescriptorProto_TYPE_INT64, "^-?[0-9]+$"},
+		{"sint64", descriptorpb.FieldDescriptorProto_TYPE_SINT64, "^-?[0-9]+$"},
+		{"sfixed64", descriptorpb.FieldDescriptorProto_TYPE_SFIXED64, "^-?[0-9]+$"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			field := makeFieldWithExtension("n", tc.fieldType, nil)
+			withRefs, plain := inlineSchemasBothSwitches(t, field)
+			assertStringIntSchema(t, withRefs, tc.wantPattern)
+			assertStringIntSchema(t, plain, tc.wantPattern)
+		})
+	}
+}
+
+func TestStringInt_StrayNumericBoundsDoNotLeak(t *testing.T) {
+	field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT64, &options.JSONSchema{
+		Minimum: 5,
+		Maximum: 100,
+	})
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+		if s.Minimum != 0 || s.Maximum != 0 {
+			t.Errorf("stray numeric bounds leaked onto string schema: min=%v max=%v", s.Minimum, s.Maximum)
+		}
+		if s.Type != "string" {
+			t.Errorf("expected type=string, got %q", s.Type)
+		}
+	}
+}
+
+func TestStringInt_StringOverridesHonored(t *testing.T) {
+	field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT64, &options.JSONSchema{
+		MinLength: 2,
+		MaxLength: 20,
+		Pattern:   "^[1-9][0-9]*$",
+		Format:    "custom",
+	})
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+		if s.Type != "string" {
+			t.Errorf("expected type=string, got %q", s.Type)
+		}
+		if s.MinLength != 2 || s.MaxLength != 20 {
+			t.Errorf("expected minLength=2 maxLength=20, got %d/%d", s.MinLength, s.MaxLength)
+		}
+		if s.Pattern != "^[1-9][0-9]*$" {
+			t.Errorf("expected override pattern to win, got %q", s.Pattern)
+		}
+		if s.Format != "custom" {
+			t.Errorf("expected honored format override %q, got %q", "custom", s.Format)
+		}
+	}
+}
+
+func TestStringInt_InvalidFormatOverrideDropped(t *testing.T) {
+	// A proto author may explicitly annotate format: uint64 on a 64-bit field.
+	// That is an integer format and is invalid on a string schema, so it must
+	// be dropped rather than honored (otherwise it re-trips ibm-schema-type-format).
+	field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT64, &options.JSONSchema{
+		Format: "uint64",
+	})
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+		if s.Format != "" {
+			t.Errorf("expected invalid format override to be dropped, got %q", s.Format)
+		}
+		if s.Type != "string" {
+			t.Errorf("expected type=string, got %q", s.Type)
+		}
+	}
+}
+
+func TestStringInt_Wrappers(t *testing.T) {
+	cases := []struct {
+		name        string
+		typeName    string
+		wantPattern string
+	}{
+		{"Int64Value", ".google.protobuf.Int64Value", "^-?[0-9]+$"},
+		{"UInt64Value", ".google.protobuf.UInt64Value", "^[0-9]+$"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			field := makeWrapperField("n", tc.typeName, nil)
+			withRefs, plain := inlineSchemasBothSwitches(t, field)
+			assertStringIntSchema(t, withRefs, tc.wantPattern)
+			assertStringIntSchema(t, plain, tc.wantPattern)
+		})
+	}
+}
+
+func TestStringInt_TopLevelWrapperResponse_Cleaned(t *testing.T) {
+	// A top-level Int64Value/UInt64Value RPC response is emitted straight from
+	// the well-known map (bypassing the field switch); cleanWellKnownStringInt
+	// applies the same cleanup: drop the invalid format, add pattern + lengths.
+	for _, tc := range []struct {
+		fqmn        string
+		wantPattern string
+	}{
+		{".google.protobuf.Int64Value", "^-?[0-9]+$"},
+		{".google.protobuf.UInt64Value", "^[0-9]+$"},
+	} {
+		t.Run(tc.fqmn, func(t *testing.T) {
+			s := cleanWellKnownStringInt(wellKnownTypesToOpenAPIV3SchemaMapping[tc.fqmn])
+			if s.Type != "string" || s.Format != "" {
+				t.Errorf("expected {string, no format}, got {%q,%q}", s.Type, s.Format)
+			}
+			if s.Pattern != tc.wantPattern {
+				t.Errorf("expected pattern %q, got %q", tc.wantPattern, s.Pattern)
+			}
+			if s.MinLength != 1 || s.MaxLength != 20 {
+				t.Errorf("expected minLength=1 maxLength=20, got %d/%d", s.MinLength, s.MaxLength)
+			}
+		})
+	}
+	// Must not mutate the shared map entry.
+	if wellKnownTypesToOpenAPIV3SchemaMapping[".google.protobuf.Int64Value"].Format != "int64" {
+		t.Error("cleanWellKnownStringInt mutated the shared well-known map entry")
+	}
+	// A non-string-int well-known schema is returned unchanged (same pointer).
+	ts := wellKnownTypesToOpenAPIV3SchemaMapping[".google.protobuf.Timestamp"]
+	if cleanWellKnownStringInt(ts) != ts {
+		t.Error("expected non-string-int well-known schema to be returned unchanged")
+	}
+}
+
+func TestStringInt_RepeatedUint64_ArrayOfStrings(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("ids", descriptorpb.FieldDescriptorProto_TYPE_UINT64, &options.JSONSchema{})
+	reg := descriptor.NewRegistry()
+	schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+	if schema == nil || schema.Type != "array" {
+		t.Fatalf("expected array schema, got %+v", schema)
+	}
+	if schema.Items == nil || schema.Items.OpenAPIV3Schema == nil {
+		t.Fatal("expected array items schema")
+	}
+	item := schema.Items.OpenAPIV3Schema
+	assertStringIntSchema(t, item, "^[0-9]+$")
+}
+
+func TestStringInt_RepeatedNumericArrayExample_Coerced(t *testing.T) {
+	// A repeated 64-bit int with a numeric array example must emit a string
+	// array to match the type: string items (else oas3-valid-schema-example).
+	for _, tc := range []struct {
+		fieldType descriptorpb.FieldDescriptorProto_Type
+		example   string
+		want      string
+	}{
+		{descriptorpb.FieldDescriptorProto_TYPE_UINT64, "[1, 2]", `["1","2"]`},
+		{descriptorpb.FieldDescriptorProto_TYPE_INT64, "[-3,4]", `["-3","4"]`},
+	} {
+		field := makeRepeatedFieldWithExtension("ids", tc.fieldType, &options.JSONSchema{Example: tc.example})
+		schema := buildPropertySchemaWithReferencesFromField(field, descriptor.NewRegistry(), map[string]string{})
+		if schema == nil || schema.Type != "array" {
+			t.Fatalf("expected array schema, got %+v", schema)
+		}
+		if got := string(schema.Example); got != tc.want {
+			t.Errorf("%v: expected array example %s, got %q", tc.fieldType, tc.want, got)
+		}
+	}
+}
+
+func TestStringInt_ScalarExampleNormalized(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		fieldType descriptorpb.FieldDescriptorProto_Type
+		example   string
+		want      string // "" => no example expected
+	}{
+		{"zero-fraction normalized", descriptorpb.FieldDescriptorProto_TYPE_INT64, "99.00", `"99"`},
+		{"quoted int", descriptorpb.FieldDescriptorProto_TYPE_UINT64, "\"42\"", `"42"`},
+		{"non-integer dropped", descriptorpb.FieldDescriptorProto_TYPE_UINT64, "3.14", ""},
+		{"large uint64 precision", descriptorpb.FieldDescriptorProto_TYPE_UINT64, "18446744073709551615", `"18446744073709551615"`},
+		{"negative on unsigned dropped", descriptorpb.FieldDescriptorProto_TYPE_UINT64, "-1", ""},
+		{"negative on signed kept", descriptorpb.FieldDescriptorProto_TYPE_INT64, "-5", `"-5"`},
+		{"oversized uint64 dropped", descriptorpb.FieldDescriptorProto_TYPE_UINT64, "123456789012345678901", ""},
+		{"int64 max kept", descriptorpb.FieldDescriptorProto_TYPE_INT64, "9223372036854775807", `"9223372036854775807"`},
+		{"int64 overflow dropped", descriptorpb.FieldDescriptorProto_TYPE_INT64, "9223372036854775808", ""},
+		{"uint64 max on signed dropped", descriptorpb.FieldDescriptorProto_TYPE_INT64, "18446744073709551615", ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			field := makeFieldWithExtension("n", tc.fieldType, &options.JSONSchema{Example: tc.example})
+			withRefs, plain := inlineSchemasBothSwitches(t, field)
+			for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+				got := string(s.Example)
+				if tc.want == "" && s.Example != nil {
+					t.Errorf("expected no example, got %q", got)
+				}
+				if tc.want != "" && got != tc.want {
+					t.Errorf("expected example %s, got %q", tc.want, got)
+				}
+			}
+		})
+	}
+}
+
+func TestStringInt_RepeatedWrapperNumericArrayExample_Coerced(t *testing.T) {
+	// Repeated Int64Value/UInt64Value with a numeric array example must also
+	// coerce to a string array to match the type: string items.
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	opts := &descriptorpb.FieldOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Field, &options.JSONSchema{Example: "[1, 2]"})
+	field := &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String("ids"),
+			Label:    &repeated,
+			Type:     &msgType,
+			TypeName: proto.String(".google.protobuf.UInt64Value"),
+			Options:  opts,
+		},
+	}
+	schema := buildPropertySchemaWithReferencesFromField(field, descriptor.NewRegistry(), map[string]string{})
+	if schema == nil || schema.Type != "array" {
+		t.Fatalf("expected array schema, got %+v", schema)
+	}
+	if got := string(schema.Example); got != `["1","2"]` {
+		t.Errorf("expected array example [\"1\",\"2\"], got %q", got)
+	}
+}
+
+// --- regressions: 32-bit ints are unchanged ---
+
+func TestStringInt_Int64ScalarBecomesString(t *testing.T) {
+	// proto3 JSON encodes scalar int64 as a decimal string, so it renders as a
+	// signed-pattern string schema just like the Int64Value wrapper.
+	field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_INT64, nil)
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	assertStringIntSchema(t, withRefs, "^-?[0-9]+$")
+	assertStringIntSchema(t, plain, "^-?[0-9]+$")
+}
+
+func TestStringInt_DefaultLengthBounds(t *testing.T) {
+	// A 64-bit int renders as type: string, so it must carry minLength/maxLength
+	// to satisfy ibm-string-attributes. With no annotation we fabricate 1..20.
+	field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT64, nil)
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+		if s.MinLength != 1 || s.MaxLength != 20 {
+			t.Errorf("expected default minLength=1 maxLength=20, got %d/%d", s.MinLength, s.MaxLength)
+		}
+	}
+}
+
+func TestStringInt_LengthOverridesHonored(t *testing.T) {
+	field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT64, &options.JSONSchema{
+		MinLength: 3,
+		MaxLength: 12,
+	})
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+		if s.MinLength != 3 || s.MaxLength != 12 {
+			t.Errorf("expected override minLength=3 maxLength=12, got %d/%d", s.MinLength, s.MaxLength)
+		}
+	}
+}
+
+func TestStringInt_Int32AndUint32Unchanged(t *testing.T) {
+	cases := []struct {
+		name       string
+		fieldType  descriptorpb.FieldDescriptorProto_Type
+		wantFormat string
+	}{
+		{"int32", descriptorpb.FieldDescriptorProto_TYPE_INT32, "int32"},
+		{"uint32", descriptorpb.FieldDescriptorProto_TYPE_UINT32, "int64"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			field := makeFieldWithExtension("n", tc.fieldType, &options.JSONSchema{Maximum: 50})
+			withRefs, plain := inlineSchemasBothSwitches(t, field)
+			for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+				if s.Type != "integer" {
+					t.Errorf("%s: expected type=integer, got %q", tc.name, s.Type)
+				}
+				if s.Format != tc.wantFormat {
+					t.Errorf("%s: expected format=%q, got %q", tc.name, tc.wantFormat, s.Format)
+				}
+				if s.Maximum != 50 {
+					t.Errorf("%s: expected numeric maximum=50 intact, got %v", tc.name, s.Maximum)
+				}
+			}
+		})
+	}
+}

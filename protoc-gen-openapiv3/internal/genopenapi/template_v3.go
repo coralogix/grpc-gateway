@@ -127,6 +127,133 @@ func openapiTypeCategory(schema *OpenAPIV3Schema) string {
 
 }
 
+// stringInt64Pattern returns the digit pattern for a stringified 64-bit int;
+// signed types allow a leading minus. An explicit override wins.
+func stringInt64Pattern(override string, signed bool) string {
+	if override != "" {
+		return override
+	}
+	if signed {
+		return "^-?[0-9]+$"
+	}
+	return "^[0-9]+$"
+}
+
+// sanitizeStringIntFormat drops int64/uint64 (integer-only formats) from a
+// stringified 64-bit int; any other format override is preserved.
+func sanitizeStringIntFormat(format string) string {
+	if format == "int64" || format == "uint64" {
+		return ""
+	}
+	return format
+}
+
+// stringIntMinLength/stringIntMaxLength bound a stringified 64-bit int to 1..20
+// chars (20 = uint64 max digits, or sign + 19 for int64 min). Override wins.
+func stringIntMinLength(override uint64) uint64 {
+	if override != 0 {
+		return override
+	}
+	return 1
+}
+
+func stringIntMaxLength(override uint64) uint64 {
+	if override != 0 {
+		return override
+	}
+	return 20
+}
+
+// stringIntExample renders a 64-bit int example for the string schema: a scalar
+// becomes a quoted decimal integer ("99.00" -> "99"), a flat array becomes an
+// array of those. signed=false rejects negatives. Invalid examples error so the
+// caller drops them.
+func stringIntExample(jsonExample string, signed bool) (string, error) {
+	if strings.HasPrefix(strings.TrimSpace(jsonExample), "[") {
+		return coerceIntArrayToStrings(jsonExample, signed)
+	}
+	canon, ok := canonicalStringInt(jsonExample, signed)
+	if !ok {
+		return "", fmt.Errorf("example %q is not a valid 64-bit integer", jsonExample)
+	}
+	b, err := json.Marshal(canon)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
+}
+
+// coerceIntArrayToStrings turns a flat JSON array of 64-bit ints into an array
+// of quoted decimal integers; errors on a non-array or invalid element.
+func coerceIntArrayToStrings(example string, signed bool) (string, error) {
+	var raw []json.RawMessage
+	if err := json.Unmarshal([]byte(example), &raw); err != nil {
+		return "", err
+	}
+	out := make([]string, len(raw))
+	for i, el := range raw {
+		canon, ok := canonicalStringInt(string(el), signed)
+		if !ok {
+			return "", fmt.Errorf("array example element %q is not a valid 64-bit integer", string(el))
+		}
+		b, err := json.Marshal(canon)
+		if err != nil {
+			return "", err
+		}
+		out[i] = string(b)
+	}
+	return "[" + strings.Join(out, ",") + "]", nil
+}
+
+// canonicalStringInt normalizes a 64-bit int example to decimal form (stripping
+// quotes and a zero-only fraction, "99.00" -> "99"). ok=false unless it is a
+// valid integer within the 64-bit range (signed int64 / unsigned uint64); the
+// original string is returned to preserve full precision.
+func canonicalStringInt(example string, signed bool) (string, bool) {
+	s := strings.TrimSpace(stripQuotes(strings.TrimSpace(example)))
+	if dot := strings.IndexByte(s, '.'); dot >= 0 {
+		if frac := s[dot+1:]; frac == "" || strings.Trim(frac, "0") != "" {
+			return "", false
+		}
+		s = s[:dot]
+	}
+	if signed {
+		if _, err := strconv.ParseInt(s, 10, 64); err != nil {
+			return "", false
+		}
+	} else if _, err := strconv.ParseUint(s, 10, 64); err != nil {
+		return "", false
+	}
+	return s, true
+}
+
+// wellKnownExample coerces a well-known-type example, using the stringified
+// 64-bit coercion for Int64Value/UInt64Value (so [1,2] becomes ["1","2"]) and
+// validateAndCoerceJsonExample for everything else.
+func wellKnownExample(schema *OpenAPIV3Schema, jsonExample, typeCategory string) (string, error) {
+	if schema.Type == "string" && (schema.Format == "int64" || schema.Format == "uint64") {
+		return stringIntExample(jsonExample, schema.Format == "int64")
+	}
+	return validateAndCoerceJsonExample(jsonExample, typeCategory)
+}
+
+// cleanWellKnownStringInt applies the stringified-64-bit cleanup to an
+// Int64Value/UInt64Value wrapper schema (for top-level wrapper responses, which
+// bypass the field-level switch); other schemas pass through unchanged.
+func cleanWellKnownStringInt(schema *OpenAPIV3Schema) *OpenAPIV3Schema {
+	if schema == nil || schema.Type != "string" ||
+		(schema.Format != "int64" && schema.Format != "uint64") {
+		return schema
+	}
+	signed := schema.Format == "int64"
+	cleaned := *schema
+	cleaned.Format = ""
+	cleaned.Pattern = stringInt64Pattern("", signed)
+	cleaned.MinLength = stringIntMinLength(0)
+	cleaned.MaxLength = stringIntMaxLength(0)
+	return &cleaned
+}
+
 func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 	resolvedNames := resolveNames(param)
 	enumSchemas := buildEnumSchemas(param, resolvedNames)
@@ -561,9 +688,11 @@ func buildResponseBody(binding *descriptor.Binding, registry *descriptor.Registr
 	responseContent := make(map[string]OpenAPIV3MediaType)
 	if targetField == nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[binding.Method.ResponseType.FQMN()]; ok {
+			// A top-level Int64Value/UInt64Value response bypasses the field-level
+			// switch, so clean it here too (drop invalid format, add pattern/length).
 			responseContent["application/json"] = OpenAPIV3MediaType{
 				Schema: &OpenAPIV3SchemaRef{
-					OpenAPIV3Schema: schema,
+					OpenAPIV3Schema: cleanWellKnownStringInt(schema),
 				},
 			}
 		} else {
@@ -1681,6 +1810,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	var exclusiveMaximum bool
 	var exclusiveMinimum bool
 	var pattern string
+	var format string
 	var maxLength uint64
 	var minLength uint64
 	var multipleOf float64
@@ -1710,6 +1840,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			exclusiveMaximum = fieldExtension.ExclusiveMaximum
 			exclusiveMinimum = fieldExtension.ExclusiveMinimum
 			pattern = fieldExtension.Pattern
+			format = fieldExtension.Format
 			maxLength = fieldExtension.MaxLength
 			minLength = fieldExtension.MinLength
 			multipleOf = fieldExtension.MultipleOf
@@ -1817,10 +1948,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
-	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 {
-		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
-		if err == nil && constrainedExample != "" {
+	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 ||
+		*field.Type == descriptorpb.FieldDescriptorProto_TYPE_FIXED64 {
+		// uint64/fixed64 are JSON strings in proto3: type: string with a digit
+		// pattern + length bounds, no numeric/format leaks. Overrides win.
+		constrainedExample, err := stringIntExample(jsonExample, false)
+		if err == nil {
 			rawExample = RawExample(constrainedExample)
+		} else {
+			rawExample = nil // drop a non-integer 64-bit example
 		}
 		if isArrayOrMapElement {
 			arrayExample = rawExample
@@ -1829,13 +1965,40 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
-			Format:              "int64",
+			Format:              sanitizeStringIntFormat(format),
 			Title:               title,
-			Maximum:             maximum,
-			Minimum:             max(minimum, 0),
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
-			MultipleOf:          multipleOf,
+			Pattern:             stringInt64Pattern(pattern, false),
+			MaxLength:           stringIntMaxLength(maxLength),
+			MinLength:           stringIntMinLength(minLength),
+			Description:         description,
+			Deprecated:          deprecated,
+			ReadOnly:            readOnly,
+			Example:             fieldExample,
+			OpenAPIV3Extensions: extensions,
+		}}, arrayExample
+	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 ||
+		*field.Type == descriptorpb.FieldDescriptorProto_TYPE_SINT64 ||
+		*field.Type == descriptorpb.FieldDescriptorProto_TYPE_SFIXED64 {
+		// Signed 64-bit ints (int64/sint64/sfixed64): like the unsigned branch
+		// above, with a sign-aware pattern.
+		constrainedExample, err := stringIntExample(jsonExample, true)
+		if err == nil {
+			rawExample = RawExample(constrainedExample)
+		} else {
+			rawExample = nil // drop a non-integer 64-bit example
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
+		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type:                "string",
+			Format:              sanitizeStringIntFormat(format),
+			Title:               title,
+			Pattern:             stringInt64Pattern(pattern, true),
+			MaxLength:           stringIntMaxLength(maxLength),
+			MinLength:           stringIntMinLength(minLength),
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
@@ -1855,31 +2018,6 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
 			Format:              "int32",
-			Title:               title,
-			Maximum:             maximum,
-			Minimum:             minimum,
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
-			MultipleOf:          multipleOf,
-			Description:         description,
-			Deprecated:          deprecated,
-			ReadOnly:            readOnly,
-			Example:             fieldExample,
-			OpenAPIV3Extensions: extensions,
-		}}, arrayExample
-	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 {
-		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "integer")
-		if err == nil && constrainedExample != "" {
-			rawExample = RawExample(constrainedExample)
-		}
-		if isArrayOrMapElement {
-			arrayExample = rawExample
-		} else {
-			fieldExample = rawExample
-		}
-		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
-			Type:                "integer",
-			Format:              "int64",
 			Title:               title,
 			Maximum:             maximum,
 			Minimum:             minimum,
@@ -1954,7 +2092,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
 			typeCategory := openapiTypeCategory(schema)
-			constrainedExample, err := validateAndCoerceJsonExample(jsonExample, typeCategory)
+			constrainedExample, err := wellKnownExample(schema, jsonExample, typeCategory)
 			if err == nil && constrainedExample != "\"\"" && constrainedExample != "" {
 				rawExample = RawExample(constrainedExample)
 			}
@@ -1968,14 +2106,24 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			schemaCopy.Description = description
 			schemaCopy.Deprecated = deprecated
 			schemaCopy.ReadOnly = readOnly
-			schemaCopy.Maximum = maximum
-			schemaCopy.Minimum = minimum
-			schemaCopy.ExclusiveMaximum = exclusiveMaximum
-			schemaCopy.ExclusiveMinimum = exclusiveMinimum
-			schemaCopy.MultipleOf = multipleOf
-			schemaCopy.Pattern = pattern
-			schemaCopy.MaxLength = maxLength
-			schemaCopy.MinLength = minLength
+			if schemaCopy.Type == "string" && (schemaCopy.Format == "int64" || schemaCopy.Format == "uint64") {
+				// Int64Value/UInt64Value wrappers render as type: string: drop the
+				// invalid format/bounds, emit a digit pattern + length bounds.
+				signed := schemaCopy.Format == "int64"
+				schemaCopy.Format = sanitizeStringIntFormat(format)
+				schemaCopy.Pattern = stringInt64Pattern(pattern, signed)
+				schemaCopy.MaxLength = stringIntMaxLength(maxLength)
+				schemaCopy.MinLength = stringIntMinLength(minLength)
+			} else {
+				schemaCopy.Maximum = maximum
+				schemaCopy.Minimum = minimum
+				schemaCopy.ExclusiveMaximum = exclusiveMaximum
+				schemaCopy.ExclusiveMinimum = exclusiveMinimum
+				schemaCopy.MultipleOf = multipleOf
+				schemaCopy.Pattern = pattern
+				schemaCopy.MaxLength = maxLength
+				schemaCopy.MinLength = minLength
+			}
 			schemaCopy.OpenAPIV3Extensions = extensions
 			schemaCopy.Example = fieldExample
 			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}, arrayExample
@@ -2136,6 +2284,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 	var exclusiveMaximum bool
 	var exclusiveMinimum bool
 	var pattern string
+	var format string
 	var maxLength uint64
 	var minLength uint64
 	var multipleOf float64
@@ -2162,6 +2311,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			exclusiveMaximum = fieldExtension.ExclusiveMaximum
 			exclusiveMinimum = fieldExtension.ExclusiveMinimum
 			pattern = fieldExtension.Pattern
+			format = fieldExtension.Format
 			maxLength = fieldExtension.MaxLength
 			minLength = fieldExtension.MinLength
 			multipleOf = fieldExtension.MultipleOf
@@ -2245,10 +2395,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
-	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 {
-		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "string")
-		if err == nil && constrainedExample != "" {
+	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 ||
+		*field.Type == descriptorpb.FieldDescriptorProto_TYPE_FIXED64 {
+		// uint64/fixed64 are JSON strings in proto3: type: string with a digit
+		// pattern + length bounds, no numeric/format leaks. Overrides win.
+		constrainedExample, err := stringIntExample(jsonExample, false)
+		if err == nil {
 			rawExample = RawExample(constrainedExample)
+		} else {
+			rawExample = nil // drop a non-integer 64-bit example
 		}
 		if isArrayOrMapElement {
 			arrayExample = rawExample
@@ -2257,13 +2412,40 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
-			Format:              "int64",
+			Format:              sanitizeStringIntFormat(format),
 			Title:               title,
-			Maximum:             maximum,
-			Minimum:             max(minimum, 0),
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
-			MultipleOf:          multipleOf,
+			Pattern:             stringInt64Pattern(pattern, false),
+			MaxLength:           stringIntMaxLength(maxLength),
+			MinLength:           stringIntMinLength(minLength),
+			Description:         description,
+			Deprecated:          deprecated,
+			ReadOnly:            readOnly,
+			Example:             fieldExample,
+			OpenAPIV3Extensions: extensions,
+		}}, arrayExample
+	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 ||
+		*field.Type == descriptorpb.FieldDescriptorProto_TYPE_SINT64 ||
+		*field.Type == descriptorpb.FieldDescriptorProto_TYPE_SFIXED64 {
+		// Signed 64-bit ints (int64/sint64/sfixed64): like the unsigned branch
+		// above, with a sign-aware pattern.
+		constrainedExample, err := stringIntExample(jsonExample, true)
+		if err == nil {
+			rawExample = RawExample(constrainedExample)
+		} else {
+			rawExample = nil // drop a non-integer 64-bit example
+		}
+		if isArrayOrMapElement {
+			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
+		}
+		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type:                "string",
+			Format:              sanitizeStringIntFormat(format),
+			Title:               title,
+			Pattern:             stringInt64Pattern(pattern, true),
+			MaxLength:           stringIntMaxLength(maxLength),
+			MinLength:           stringIntMinLength(minLength),
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
@@ -2308,31 +2490,6 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "integer",
 			Format:              "int32",
-			Title:               title,
-			Maximum:             maximum,
-			Minimum:             minimum,
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
-			MultipleOf:          multipleOf,
-			Description:         description,
-			Deprecated:          deprecated,
-			ReadOnly:            readOnly,
-			Example:             fieldExample,
-			OpenAPIV3Extensions: extensions,
-		}}, arrayExample
-	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 {
-		constrainedExample, err := validateAndCoerceJsonExample(jsonExample, "integer")
-		if err == nil && constrainedExample != "" {
-			rawExample = RawExample(constrainedExample)
-		}
-		if isArrayOrMapElement {
-			arrayExample = rawExample
-		} else {
-			fieldExample = rawExample
-		}
-		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
-			Type:                "integer",
-			Format:              "int64",
 			Title:               title,
 			Maximum:             maximum,
 			Minimum:             minimum,
@@ -2405,7 +2562,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
 			typeCategory := openapiTypeCategory(schema)
-			constrainedExample, err := validateAndCoerceJsonExample(jsonExample, typeCategory)
+			constrainedExample, err := wellKnownExample(schema, jsonExample, typeCategory)
 			if err == nil && constrainedExample != "\"\"" && constrainedExample != "" {
 				rawExample = RawExample(constrainedExample)
 			}
@@ -2419,14 +2576,24 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			schemaCopy.Description = description
 			schemaCopy.Deprecated = deprecated
 			schemaCopy.ReadOnly = readOnly
-			schemaCopy.Maximum = maximum
-			schemaCopy.Minimum = minimum
-			schemaCopy.ExclusiveMaximum = exclusiveMaximum
-			schemaCopy.ExclusiveMinimum = exclusiveMinimum
-			schemaCopy.MultipleOf = multipleOf
-			schemaCopy.Pattern = pattern
-			schemaCopy.MaxLength = maxLength
-			schemaCopy.MinLength = minLength
+			if schemaCopy.Type == "string" && (schemaCopy.Format == "int64" || schemaCopy.Format == "uint64") {
+				// Int64Value/UInt64Value wrappers render as type: string: drop the
+				// invalid format/bounds, emit a digit pattern + length bounds.
+				signed := schemaCopy.Format == "int64"
+				schemaCopy.Format = sanitizeStringIntFormat(format)
+				schemaCopy.Pattern = stringInt64Pattern(pattern, signed)
+				schemaCopy.MaxLength = stringIntMaxLength(maxLength)
+				schemaCopy.MinLength = stringIntMinLength(minLength)
+			} else {
+				schemaCopy.Maximum = maximum
+				schemaCopy.Minimum = minimum
+				schemaCopy.ExclusiveMaximum = exclusiveMaximum
+				schemaCopy.ExclusiveMinimum = exclusiveMinimum
+				schemaCopy.MultipleOf = multipleOf
+				schemaCopy.Pattern = pattern
+				schemaCopy.MaxLength = maxLength
+				schemaCopy.MinLength = minLength
+			}
 			schemaCopy.OpenAPIV3Extensions = extensions
 			schemaCopy.Example = fieldExample
 			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}, arrayExample
