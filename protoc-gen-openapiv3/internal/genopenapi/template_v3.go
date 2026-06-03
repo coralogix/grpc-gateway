@@ -256,15 +256,24 @@ func cleanWellKnownStringInt(schema *OpenAPIV3Schema) *OpenAPIV3Schema {
 
 // cleanWellKnownResponseSchema applies the field-level cleanups to a top-level
 // well-known-type response (which bypasses the field switch): the stringified
-// 64-bit cleanup for Int64Value/UInt64Value, and minimum: 0 for the UInt32Value
-// integer wrapper. Other schemas pass through unchanged.
+// 64-bit cleanup for Int64Value/UInt64Value, minimum: 0 for the UInt32Value
+// integer wrapper, and minLength: 0 for the remaining string wrappers
+// (StringValue/BytesValue/FieldMask/Timestamp/Duration). Others pass through.
 func cleanWellKnownResponseSchema(schema *OpenAPIV3Schema, fqmn string) *OpenAPIV3Schema {
 	if schema != nil && fqmn == ".google.protobuf.UInt32Value" {
 		cleaned := *schema
 		cleaned.Minimum = float64Ptr(0)
 		return &cleaned
 	}
-	return cleanWellKnownStringInt(schema)
+	cleaned := cleanWellKnownStringInt(schema)
+	// String wrappers also need minLength: 0 (the int64/uint64 branch above
+	// already set one). Copy so the shared mapping entry is not mutated.
+	if cleaned != nil && cleaned.Type == "string" && cleaned.MinLength == nil {
+		c := *cleaned
+		c.MinLength = uint64Ptr(0)
+		cleaned = &c
+	}
+	return cleaned
 }
 
 // uint64Ptr / float64Ptr build pointers for schema fields that must serialize a

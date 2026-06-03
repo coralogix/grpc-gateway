@@ -2955,6 +2955,34 @@ func TestMinimum_TopLevelUInt32ValueResponse_EmitsZero(t *testing.T) {
 	}
 }
 
+func TestMinLength_TopLevelStringWrapperResponse_EmitsZero(t *testing.T) {
+	// Top-level string-wrapper RPC responses are emitted straight from the
+	// well-known map (bypassing the field switch); cleanWellKnownResponseSchema
+	// must emit minLength: 0 so they satisfy ibm-string-attributes.
+	for _, fqmn := range []string{
+		".google.protobuf.StringValue",
+		".google.protobuf.BytesValue",
+		".google.protobuf.FieldMask",
+		".google.protobuf.Timestamp",
+		".google.protobuf.Duration",
+	} {
+		t.Run(fqmn, func(t *testing.T) {
+			mapped := wellKnownTypesToOpenAPIV3SchemaMapping[fqmn]
+			s := cleanWellKnownResponseSchema(mapped, fqmn)
+			if s.Type != "string" {
+				t.Fatalf("expected type=string, got %q", s.Type)
+			}
+			if derefMinLength(s.MinLength) != 0 {
+				t.Errorf("expected minLength=0, got %d", derefMinLength(s.MinLength))
+			}
+			// Must not mutate the shared map entry.
+			if mapped.MinLength != nil {
+				t.Error("cleanWellKnownResponseSchema mutated the shared well-known map entry")
+			}
+		})
+	}
+}
+
 func TestMinZero_MarshalRoundTrip(t *testing.T) {
 	// A deliberate minItems:0 / minimum:0 must serialize (the whole point of the
 	// pointer change) and survive a marshal -> unmarshal -> marshal round-trip.
