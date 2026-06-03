@@ -2407,6 +2407,15 @@ func TestExample_StringWithExplicitExample_EmittedVerbatim(t *testing.T) {
 	}
 }
 
+// derefMinLength reads a *uint64 MinLength for test assertions; nil reads as a
+// sentinel that never matches an expected concrete length.
+func derefMinLength(p *uint64) uint64 {
+	if p == nil {
+		return ^uint64(0)
+	}
+	return *p
+}
+
 func TestExample_StringMinLength1NoExample_NoViolation(t *testing.T) {
 	field := makeFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
 		MinLength: 1,
@@ -2426,8 +2435,8 @@ func TestExample_StringMinLength1NoExample_NoViolation(t *testing.T) {
 		})},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if tc.schema.OpenAPIV3Schema.MinLength != 1 {
-				t.Errorf("expected minLength=1, got %d", tc.schema.OpenAPIV3Schema.MinLength)
+			if derefMinLength(tc.schema.OpenAPIV3Schema.MinLength) != 1 {
+				t.Errorf("expected minLength=1, got %d", derefMinLength(tc.schema.OpenAPIV3Schema.MinLength))
 			}
 			if ex := tc.schema.OpenAPIV3Schema.Example; ex != nil {
 				t.Errorf("expected no example (empty example would violate minLength:1), got %q", string(ex))
@@ -2586,8 +2595,8 @@ func TestStringInt_StringOverridesHonored(t *testing.T) {
 		if s.Type != "string" {
 			t.Errorf("expected type=string, got %q", s.Type)
 		}
-		if s.MinLength != 2 || s.MaxLength != 20 {
-			t.Errorf("expected minLength=2 maxLength=20, got %d/%d", s.MinLength, s.MaxLength)
+		if derefMinLength(s.MinLength) != 2 || s.MaxLength != 20 {
+			t.Errorf("expected minLength=2 maxLength=20, got %d/%d", derefMinLength(s.MinLength), s.MaxLength)
 		}
 		if s.Pattern != "^[1-9][0-9]*$" {
 			t.Errorf("expected override pattern to win, got %q", s.Pattern)
@@ -2654,8 +2663,8 @@ func TestStringInt_TopLevelWrapperResponse_Cleaned(t *testing.T) {
 			if s.Pattern != tc.wantPattern {
 				t.Errorf("expected pattern %q, got %q", tc.wantPattern, s.Pattern)
 			}
-			if s.MinLength != 1 || s.MaxLength != 20 {
-				t.Errorf("expected minLength=1 maxLength=20, got %d/%d", s.MinLength, s.MaxLength)
+			if derefMinLength(s.MinLength) != 1 || s.MaxLength != 20 {
+				t.Errorf("expected minLength=1 maxLength=20, got %d/%d", derefMinLength(s.MinLength), s.MaxLength)
 			}
 		})
 	}
@@ -2782,8 +2791,8 @@ func TestStringInt_DefaultLengthBounds(t *testing.T) {
 	field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT64, nil)
 	withRefs, plain := inlineSchemasBothSwitches(t, field)
 	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
-		if s.MinLength != 1 || s.MaxLength != 20 {
-			t.Errorf("expected default minLength=1 maxLength=20, got %d/%d", s.MinLength, s.MaxLength)
+		if derefMinLength(s.MinLength) != 1 || s.MaxLength != 20 {
+			t.Errorf("expected default minLength=1 maxLength=20, got %d/%d", derefMinLength(s.MinLength), s.MaxLength)
 		}
 	}
 }
@@ -2795,8 +2804,8 @@ func TestStringInt_LengthOverridesHonored(t *testing.T) {
 	})
 	withRefs, plain := inlineSchemasBothSwitches(t, field)
 	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
-		if s.MinLength != 3 || s.MaxLength != 12 {
-			t.Errorf("expected override minLength=3 maxLength=12, got %d/%d", s.MinLength, s.MaxLength)
+		if derefMinLength(s.MinLength) != 3 || s.MaxLength != 12 {
+			t.Errorf("expected override minLength=3 maxLength=12, got %d/%d", derefMinLength(s.MinLength), s.MaxLength)
 		}
 	}
 }

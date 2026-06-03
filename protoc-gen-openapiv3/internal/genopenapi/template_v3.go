@@ -150,11 +150,11 @@ func sanitizeStringIntFormat(format string) string {
 
 // stringIntMinLength/stringIntMaxLength bound a stringified 64-bit int to 1..20
 // chars (20 = uint64 max digits, or sign + 19 for int64 min). Override wins.
-func stringIntMinLength(override uint64) uint64 {
+func stringIntMinLength(override uint64) *uint64 {
 	if override != 0 {
-		return override
+		return uint64Ptr(override)
 	}
-	return 1
+	return uint64Ptr(1)
 }
 
 func stringIntMaxLength(override uint64) uint64 {
@@ -2089,7 +2089,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Deprecated:          deprecated,
 			Pattern:             pattern,
 			MaxLength:           maxLength,
-			MinLength:           minLength,
+			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
 			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
@@ -2112,7 +2112,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			MaxLength:           maxLength,
-			MinLength:           minLength,
+			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
 			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
@@ -2167,7 +2167,10 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 				schemaCopy.MultipleOf = multipleOf
 				schemaCopy.Pattern = pattern
 				schemaCopy.MaxLength = maxLength
-				schemaCopy.MinLength = minLength
+				// Only string wrappers carry minLength; non-string wrappers omit it.
+				if schemaCopy.Type == "string" {
+					schemaCopy.MinLength = uint64Ptr(minLength)
+				}
 			}
 			schemaCopy.OpenAPIV3Extensions = extensions
 			schemaCopy.Example = fieldExample
@@ -2575,7 +2578,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Deprecated:          deprecated,
 			Pattern:             pattern,
 			MaxLength:           maxLength,
-			MinLength:           minLength,
+			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
 			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
@@ -2598,7 +2601,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			MaxLength:           maxLength,
-			MinLength:           minLength,
+			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
 			Example:             fieldExample,
 			OpenAPIV3Extensions: extensions,
@@ -2651,7 +2654,10 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 				schemaCopy.MultipleOf = multipleOf
 				schemaCopy.Pattern = pattern
 				schemaCopy.MaxLength = maxLength
-				schemaCopy.MinLength = minLength
+				// Only string wrappers carry minLength; non-string wrappers omit it.
+				if schemaCopy.Type == "string" {
+					schemaCopy.MinLength = uint64Ptr(minLength)
+				}
 			}
 			schemaCopy.OpenAPIV3Extensions = extensions
 			schemaCopy.Example = fieldExample
