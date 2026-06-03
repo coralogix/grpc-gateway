@@ -103,6 +103,9 @@ proto:
 	rm ./protoc-gen-openapiv2/options/annotations.swagger.json
 	rm ./protoc-gen-openapiv2/options/openapiv2.swagger.json
 	buf generate \
+		--template ./examples/internal/proto/examplepb/opaque.buf.gen.yaml \
+		--path ./examples/internal/proto/examplepb/opaque.proto
+	buf generate \
 		--template ./examples/internal/proto/examplepb/openapi_merge.buf.gen.yaml \
 		--path ./examples/internal/proto/examplepb/openapi_merge_a.proto \
 		--path ./examples/internal/proto/examplepb/openapi_merge_b.proto
