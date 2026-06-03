@@ -241,9 +241,10 @@ type OpenAPIV3Schema struct {
 	Minimum          *float64 `json:"minimum,omitempty" yaml:"minimum,omitempty"`
 	ExclusiveMinimum bool     `json:"exclusiveMinimum,omitempty" yaml:"exclusiveMinimum,omitempty"`
 	MaxLength        uint64   `json:"maxLength,omitempty" yaml:"maxLength,omitempty"`
-	MinLength        uint64   `json:"minLength,omitempty" yaml:"minLength,omitempty"`
-	Pattern          string   `json:"pattern,omitempty" yaml:"pattern,omitempty"`
-	MaxItems         uint64   `json:"maxItems,omitempty" yaml:"maxItems,omitempty"`
+	// MinLength is a pointer so an explicit 0 serializes; nil omits it. Mirrors MinItems.
+	MinLength *uint64 `json:"minLength,omitempty" yaml:"minLength,omitempty"`
+	Pattern   string  `json:"pattern,omitempty" yaml:"pattern,omitempty"`
+	MaxItems  uint64  `json:"maxItems,omitempty" yaml:"maxItems,omitempty"`
 	// MinItems is a pointer so a deliberate 0 serializes (omitempty drops a
 	// uint64 zero). Arrays emit minItems: 0 by default; nil means "not an array"
 	// / no minItems.
