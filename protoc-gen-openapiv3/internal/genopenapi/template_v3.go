@@ -254,6 +254,36 @@ func cleanWellKnownStringInt(schema *OpenAPIV3Schema) *OpenAPIV3Schema {
 	return &cleaned
 }
 
+// cleanWellKnownResponseSchema applies the field-level cleanups to a top-level
+// well-known-type response (which bypasses the field switch): the stringified
+// 64-bit cleanup for Int64Value/UInt64Value, and minimum: 0 for the UInt32Value
+// integer wrapper. Other schemas pass through unchanged.
+func cleanWellKnownResponseSchema(schema *OpenAPIV3Schema, fqmn string) *OpenAPIV3Schema {
+	if schema != nil && fqmn == ".google.protobuf.UInt32Value" {
+		cleaned := *schema
+		cleaned.Minimum = float64Ptr(0)
+		return &cleaned
+	}
+	return cleanWellKnownStringInt(schema)
+}
+
+// uint64Ptr / float64Ptr build pointers for schema fields that must serialize a
+// deliberate 0 (the struct fields use omitempty, which would otherwise drop a
+// zero value).
+func uint64Ptr(v uint64) *uint64    { return &v }
+func float64Ptr(v float64) *float64 { return &v }
+
+// optionalMinimum returns a pointer to a non-zero minimum, or nil when it is 0.
+// proto3 cannot distinguish an unset minimum from an explicit 0, so for signed
+// numeric types 0 stays omitted (only unsigned integers, whose natural lower
+// bound is 0, force-emit minimum: 0 via float64Ptr).
+func optionalMinimum(v float64) *float64 {
+	if v == 0 {
+		return nil
+	}
+	return &v
+}
+
 func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 	resolvedNames := resolveNames(param)
 	enumSchemas := buildEnumSchemas(param, resolvedNames)
@@ -688,11 +718,12 @@ func buildResponseBody(binding *descriptor.Binding, registry *descriptor.Registr
 	responseContent := make(map[string]OpenAPIV3MediaType)
 	if targetField == nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[binding.Method.ResponseType.FQMN()]; ok {
-			// A top-level Int64Value/UInt64Value response bypasses the field-level
-			// switch, so clean it here too (drop invalid format, add pattern/length).
+			// A top-level wrapper response bypasses the field-level switch, so
+			// apply the same cleanups here (string-int format/pattern/length and
+			// the UInt32Value minimum: 0).
 			responseContent["application/json"] = OpenAPIV3MediaType{
 				Schema: &OpenAPIV3SchemaRef{
-					OpenAPIV3Schema: cleanWellKnownStringInt(schema),
+					OpenAPIV3Schema: cleanWellKnownResponseSchema(schema, binding.Method.ResponseType.FQMN()),
 				},
 			}
 		} else {
@@ -1788,13 +1819,19 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 		if example != nil {
 			schema.Example = example
 		}
+		// Always emit minItems on arrays (default 0). proto3 cannot express an
+		// explicit 0, so an array with no min_items annotation still gets
+		// minItems: 0, satisfying ibm-array-attributes. maxItems has no natural
+		// default and is only emitted when annotated.
+		var minItems uint64
 		if proto.HasExtension(field.Options, options.E_Openapiv3Field) {
 			if fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema); ok {
 				schema.Description = fieldExtension.Description
-				schema.MinItems = fieldExtension.MinItems
+				minItems = fieldExtension.MinItems
 				schema.MaxItems = fieldExtension.MaxItems
 			}
 		}
+		schema.MinItems = uint64Ptr(minItems)
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
@@ -1888,7 +1925,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Format:              "double",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             minimum,
+			Minimum:             optionalMinimum(minimum),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -1913,7 +1950,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Format:              "float",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             minimum,
+			Minimum:             optionalMinimum(minimum),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -1934,11 +1971,13 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			fieldExample = rawExample
 		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
-			Type:                "integer",
-			Format:              "int64",
-			Title:               title,
-			Maximum:             maximum,
-			Minimum:             max(minimum, 0),
+			Type:    "integer",
+			Format:  "int64",
+			Title:   title,
+			Maximum: maximum,
+			// Unsigned integer: natural lower bound is 0, so emit minimum: 0 by
+			// default (ibm-integer-attributes). An override raises it.
+			Minimum:             float64Ptr(max(minimum, 0)),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2020,7 +2059,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Format:              "int32",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             minimum,
+			Minimum:             optionalMinimum(minimum),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2116,7 +2155,13 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 				schemaCopy.MinLength = stringIntMinLength(minLength)
 			} else {
 				schemaCopy.Maximum = maximum
-				schemaCopy.Minimum = minimum
+				if field.TypeName != nil && *field.TypeName == ".google.protobuf.UInt32Value" {
+					// Unsigned 32-bit wrapper renders as type: integer; emit
+					// minimum: 0 by default. An override raises the floor.
+					schemaCopy.Minimum = float64Ptr(max(minimum, 0))
+				} else {
+					schemaCopy.Minimum = optionalMinimum(minimum)
+				}
 				schemaCopy.ExclusiveMaximum = exclusiveMaximum
 				schemaCopy.ExclusiveMinimum = exclusiveMinimum
 				schemaCopy.MultipleOf = multipleOf
@@ -2263,13 +2308,19 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 		if example != nil {
 			schema.Example = example
 		}
+		// Always emit minItems on arrays (default 0). proto3 cannot express an
+		// explicit 0, so an array with no min_items annotation still gets
+		// minItems: 0, satisfying ibm-array-attributes. maxItems has no natural
+		// default and is only emitted when annotated.
+		var minItems uint64
 		if proto.HasExtension(field.Options, options.E_Openapiv3Field) {
 			if fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema); ok {
 				schema.Description = fieldExtension.Description
-				schema.MinItems = fieldExtension.MinItems
+				minItems = fieldExtension.MinItems
 				schema.MaxItems = fieldExtension.MaxItems
 			}
 		}
+		schema.MinItems = uint64Ptr(minItems)
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
@@ -2360,7 +2411,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Format:              "double",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             minimum,
+			Minimum:             optionalMinimum(minimum),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2381,11 +2432,13 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			fieldExample = rawExample
 		}
 		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
-			Type:                "integer",
-			Format:              "int64",
-			Title:               title,
-			Maximum:             maximum,
-			Minimum:             max(minimum, 0),
+			Type:    "integer",
+			Format:  "int64",
+			Title:   title,
+			Maximum: maximum,
+			// Unsigned integer: natural lower bound is 0, so emit minimum: 0 by
+			// default (ibm-integer-attributes). An override raises it.
+			Minimum:             float64Ptr(max(minimum, 0)),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2467,7 +2520,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Format:              "float",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             minimum,
+			Minimum:             optionalMinimum(minimum),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2492,7 +2545,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Format:              "int32",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             minimum,
+			Minimum:             optionalMinimum(minimum),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2586,7 +2639,13 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 				schemaCopy.MinLength = stringIntMinLength(minLength)
 			} else {
 				schemaCopy.Maximum = maximum
-				schemaCopy.Minimum = minimum
+				if field.TypeName != nil && *field.TypeName == ".google.protobuf.UInt32Value" {
+					// Unsigned 32-bit wrapper renders as type: integer; emit
+					// minimum: 0 by default. An override raises the floor.
+					schemaCopy.Minimum = float64Ptr(max(minimum, 0))
+				} else {
+					schemaCopy.Minimum = optionalMinimum(minimum)
+				}
 				schemaCopy.ExclusiveMaximum = exclusiveMaximum
 				schemaCopy.ExclusiveMinimum = exclusiveMinimum
 				schemaCopy.MultipleOf = multipleOf

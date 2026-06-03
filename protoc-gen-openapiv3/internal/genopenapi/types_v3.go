@@ -231,17 +231,23 @@ type OpenAPIV3SchemaRef struct {
 }
 
 type OpenAPIV3Schema struct {
-	Title                string                         `json:"title,omitempty" yaml:"title,omitempty"`
-	MultipleOf           float64                        `json:"multipleOf,omitempty" yaml:"multipleOf,omitempty"`
-	Maximum              float64                        `json:"maximum,omitempty" yaml:"maximum,omitempty"`
-	ExclusiveMaximum     bool                           `json:"exclusiveMaximum,omitempty" yaml:"exclusiveMaximum,omitempty"`
-	Minimum              float64                        `json:"minimum,omitempty" yaml:"minimum,omitempty"`
-	ExclusiveMinimum     bool                           `json:"exclusiveMinimum,omitempty" yaml:"exclusiveMinimum,omitempty"`
-	MaxLength            uint64                         `json:"maxLength,omitempty" yaml:"maxLength,omitempty"`
-	MinLength            uint64                         `json:"minLength,omitempty" yaml:"minLength,omitempty"`
-	Pattern              string                         `json:"pattern,omitempty" yaml:"pattern,omitempty"`
-	MaxItems             uint64                         `json:"maxItems,omitempty" yaml:"maxItems,omitempty"`
-	MinItems             uint64                         `json:"minItems,omitempty" yaml:"minItems,omitempty"`
+	Title            string  `json:"title,omitempty" yaml:"title,omitempty"`
+	MultipleOf       float64 `json:"multipleOf,omitempty" yaml:"multipleOf,omitempty"`
+	Maximum          float64 `json:"maximum,omitempty" yaml:"maximum,omitempty"`
+	ExclusiveMaximum bool    `json:"exclusiveMaximum,omitempty" yaml:"exclusiveMaximum,omitempty"`
+	// Minimum is a pointer so a deliberate 0 serializes (omitempty drops a
+	// float64 zero). Unsigned integers, whose natural lower bound is 0, emit
+	// minimum: 0 by default; nil means "no minimum".
+	Minimum          *float64 `json:"minimum,omitempty" yaml:"minimum,omitempty"`
+	ExclusiveMinimum bool     `json:"exclusiveMinimum,omitempty" yaml:"exclusiveMinimum,omitempty"`
+	MaxLength        uint64   `json:"maxLength,omitempty" yaml:"maxLength,omitempty"`
+	MinLength        uint64   `json:"minLength,omitempty" yaml:"minLength,omitempty"`
+	Pattern          string   `json:"pattern,omitempty" yaml:"pattern,omitempty"`
+	MaxItems         uint64   `json:"maxItems,omitempty" yaml:"maxItems,omitempty"`
+	// MinItems is a pointer so a deliberate 0 serializes (omitempty drops a
+	// uint64 zero). Arrays emit minItems: 0 by default; nil means "not an array"
+	// / no minItems.
+	MinItems             *uint64                        `json:"minItems,omitempty" yaml:"minItems,omitempty"`
 	UniqueItems          bool                           `json:"uniqueItems,omitempty" yaml:"uniqueItems,omitempty"`
 	MaxProperties        uint64                         `json:"maxProperties,omitempty" yaml:"maxProperties,omitempty"`
 	MinProperties        uint64                         `json:"minProperties,omitempty" yaml:"minProperties,omitempty"`
