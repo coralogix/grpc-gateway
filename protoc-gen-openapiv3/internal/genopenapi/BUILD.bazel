@@ -43,7 +43,12 @@ go_test(
     ],
     data = glob(["testdata/**"]),
     embed = [":genopenapi"],
-    deps = ["@in_yaml_go_yaml_v3//:yaml"],
+    deps = [
+        "//internal/descriptor",
+        "@in_yaml_go_yaml_v3//:yaml",
+        "@org_golang_google_protobuf//proto",
+        "@org_golang_google_protobuf//types/descriptorpb",
+    ],
 )
 
 alias(
