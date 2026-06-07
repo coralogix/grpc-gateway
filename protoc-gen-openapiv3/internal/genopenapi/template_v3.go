@@ -829,6 +829,10 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 			if statusCode != successStatusCode {
 				var ref string
 				var content map[string]OpenAPIV3MediaType
+				// Emit content only when a body schema is referenced. A
+				// description-only response has no body; a fabricated empty
+				// media type trips ibm-content-contains-schema. Examples, if
+				// any, are added back by applyResponseExamples below.
 				if response.Schema != nil && response.Schema.JsonSchema != nil && response.Schema.JsonSchema.Ref != "" {
 					ref = "#/components/schemas/" + response.Schema.JsonSchema.Ref
 					content = make(map[string]OpenAPIV3MediaType)
@@ -837,9 +841,6 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 							Ref: ref,
 						},
 					}
-				} else {
-					content = make(map[string]OpenAPIV3MediaType)
-					content["application/json"] = OpenAPIV3MediaType{}
 				}
 				headers := make(map[string]OpenAPIV3HeaderRef)
 				for headerName, header := range response.Headers {

@@ -2160,7 +2160,7 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_EmitsExamplesForNonSuccess(
 	}
 }
 
-func TestExtractOpenAPIV3ResponsesFromProtoExtension_NoExamplesLeavesContentEmpty(t *testing.T) {
+func TestExtractOpenAPIV3ResponsesFromProtoExtension_NoContentWhenDescriptionOnly(t *testing.T) {
 	op := &options.Operation{
 		Responses: map[string]*options.Response{
 			"500": {Description: "Internal Server Error"},
@@ -2172,12 +2172,11 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_NoExamplesLeavesContentEmpt
 	if !ok || resp.OpenAPIV3Response == nil {
 		t.Fatalf("expected 500 response, got keys %v", keysOfResponses(got))
 	}
-	mt, ok := resp.Content["application/json"]
-	if !ok {
-		t.Fatal("expected default application/json content entry to be created")
-	}
-	if mt.Example != nil {
-		t.Errorf("expected no Example when annotation has none, got %v", mt.Example)
+	// A description-only response has no body schema, so no content is emitted —
+	// otherwise a schemaless content:{application/json:{}} trips
+	// ibm-content-contains-schema.
+	if len(resp.Content) != 0 {
+		t.Errorf("expected no content entry for a description-only response, got %v", resp.Content)
 	}
 }
 
@@ -2345,9 +2344,42 @@ func TestExtractResponses_CustomResponseDescriptionOnly(t *testing.T) {
 	if resp.Description != "Not Found" {
 		t.Errorf("expected description %q, got %q", "Not Found", resp.Description)
 	}
-	// Description-only responses carry no schema in their content.
-	if media, ok := resp.Content["application/json"]; ok && media.Schema != nil {
-		t.Errorf("expected no schema on a description-only response, got %v", media.Schema)
+	// Description-only responses carry no content at all (no body schema).
+	if len(resp.Content) != 0 {
+		t.Errorf("expected no content on a description-only response, got %v", resp.Content)
+	}
+}
+
+// TestExtractResponses_ExamplesWithoutSchemaStillEmitContent guards that
+// dropping the fabricated empty media type does not lose an annotated example:
+// applyResponseExamples must still lazily create the content entry so a custom
+// response with examples (but no schema) carries the example.
+func TestExtractResponses_ExamplesWithoutSchemaStillEmitContent(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"400": {
+				Description: "Bad Request",
+				Examples: map[string]string{
+					"application/json": `{"error":"bad"}`,
+				},
+			},
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+
+	resp, ok := responses["400"]
+	if !ok {
+		t.Fatal("expected a 400 response")
+	}
+	mt, ok := resp.Content["application/json"]
+	if !ok {
+		t.Fatal("expected a content entry to be created for an annotated example")
+	}
+	if mt.Example == nil {
+		t.Error("expected the annotated example to be carried on the media type")
+	}
+	if mt.Schema != nil {
+		t.Errorf("expected no schema on an example-only response, got %v", mt.Schema)
 	}
 }
 
