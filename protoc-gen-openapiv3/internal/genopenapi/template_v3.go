@@ -6,6 +6,7 @@ import (
 	"log"
 	"maps"
 	"mime"
+	"reflect"
 	"sort"
 	"strconv"
 	"strings"
@@ -311,6 +312,7 @@ func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 	if err != nil {
 		return OpenAPIV3Document{}, err
 	}
+	hoistSharedPathParameters(paths)
 	openapiDocument := OpenAPIV3Document{
 		OpenAPI: "3.0.0",
 		Info: &OpenAPIV3Info{
@@ -527,6 +529,66 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 		}
 	}
 	return paths, schemasToAddToComponents, nil
+}
+
+// hoistSharedPathParameters moves a path parameter to the path-item level when
+// it is defined identically across every operation on a path that has more than
+// one operation, then removes it from each operation. This avoids repeating the
+// same path parameter on each operation (ibm-avoid-repeating-path-parameters).
+// Differing definitions and query parameters are left untouched.
+func hoistSharedPathParameters(paths OpenAPIV3Paths) {
+	for _, pathItem := range paths {
+		ops := pathItem.operations()
+		if len(ops) < 2 {
+			continue
+		}
+		// A path parameter is hoistable iff every operation defines it and all
+		// copies are identical. Iterate the first operation's path params so the
+		// hoisted order is deterministic.
+		for _, candidate := range ops[0].Parameters {
+			if candidate.OpenAPIV3Parameter == nil || candidate.In != "path" {
+				continue
+			}
+			name := candidate.Name
+			shared := true
+			for _, op := range ops[1:] {
+				if match := findPathParameter(op.Parameters, name); match == nil || !reflect.DeepEqual(*match, candidate) {
+					shared = false
+					break
+				}
+			}
+			if !shared {
+				continue
+			}
+			pathItem.Parameters = append(pathItem.Parameters, candidate)
+			for _, op := range ops {
+				op.Parameters = removePathParameter(op.Parameters, name)
+			}
+		}
+	}
+}
+
+// findPathParameter returns the path parameter with the given name, or nil.
+func findPathParameter(params []OpenAPIV3ParameterRef, name string) *OpenAPIV3ParameterRef {
+	for i := range params {
+		if params[i].OpenAPIV3Parameter != nil && params[i].In == "path" && params[i].Name == name {
+			return &params[i]
+		}
+	}
+	return nil
+}
+
+// removePathParameter returns params without the named path parameter, keeping
+// the order of the remaining entries.
+func removePathParameter(params []OpenAPIV3ParameterRef, name string) []OpenAPIV3ParameterRef {
+	filtered := make([]OpenAPIV3ParameterRef, 0, len(params))
+	for _, p := range params {
+		if p.OpenAPIV3Parameter != nil && p.In == "path" && p.Name == name {
+			continue
+		}
+		filtered = append(filtered, p)
+	}
+	return filtered
 }
 
 func sanitizeURLPath(urlPath string) string {
