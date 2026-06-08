@@ -1353,7 +1353,7 @@ func newRequestBodyFixture(t *testing.T, fieldNames []string, required []string,
 // is set to true. This is the fix for ibm-no-required-properties-in-optional-body.
 func TestBuildRequestBody_RequiredSetWhenBodyHasRequiredProperties(t *testing.T) {
 	binding := newRequestBodyFixture(t, []string{"name", "kind"}, []string{"name"}, nil)
-	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
+	body, _ := buildRequestBody(binding, "DoThing", map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
 	if body == nil || body.OpenAPIV3RequestBody == nil {
 		t.Fatal("expected non-nil request body")
 	}
@@ -1367,7 +1367,7 @@ func TestBuildRequestBody_RequiredSetWhenBodyHasRequiredProperties(t *testing.T)
 // hence is omitted from JSON output).
 func TestBuildRequestBody_RequiredFalseWhenNoRequiredProperties(t *testing.T) {
 	binding := newRequestBodyFixture(t, []string{"name", "kind"}, nil, nil)
-	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
+	body, _ := buildRequestBody(binding, "DoThing", map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
 	if body == nil || body.OpenAPIV3RequestBody == nil {
 		t.Fatal("expected non-nil request body")
 	}
@@ -1382,13 +1382,71 @@ func TestBuildRequestBody_RequiredFalseWhenNoRequiredProperties(t *testing.T) {
 // requestBody.required must NOT be set.
 func TestBuildRequestBody_RequiredFalseWhenOnlyPathParamRequired(t *testing.T) {
 	binding := newRequestBodyFixture(t, []string{"id", "name"}, []string{"id"}, []string{"id"})
-	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
+	body, _ := buildRequestBody(binding, "DoThing", map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
 	if body == nil || body.OpenAPIV3RequestBody == nil {
 		t.Fatal("expected non-nil request body")
 	}
 	if body.Required {
 		t.Errorf("expected requestBody.required=false when only required field is a path param, got true")
 	}
+}
+
+// TestBuildRequestBody_EmitsRefToNamedComponent verifies the fix for
+// ibm-avoid-inline-schemas: the request body content schema is a $ref to a
+// named component (not an inline object schema), and that component is returned
+// in the schemas-to-add map carrying the body's properties.
+func TestBuildRequestBody_EmitsRefToNamedComponent(t *testing.T) {
+	binding := newRequestBodyFixture(t, []string{"name", "kind"}, nil, nil)
+	body, schemas := buildRequestBody(binding, "DoThing", map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	schemaRef := body.OpenAPIV3RequestBody.Content["application/json"].Schema
+	if schemaRef == nil {
+		t.Fatal("expected application/json schema entry")
+	}
+	if schemaRef.OpenAPIV3Schema != nil {
+		t.Errorf("expected request body schema to be a $ref (inline schema), got inline: %+v", schemaRef.OpenAPIV3Schema)
+	}
+	const wantRef = "#/components/schemas/DoThingRequest"
+	if schemaRef.Ref != wantRef {
+		t.Errorf("expected body $ref %q, got %q", wantRef, schemaRef.Ref)
+	}
+	component, ok := schemas["DoThingRequest"]
+	if !ok {
+		t.Fatalf("expected component %q to be registered, got keys %v", "DoThingRequest", keysOfSchemas(schemas))
+	}
+	if component.OpenAPIV3Schema == nil || len(component.OpenAPIV3Schema.Properties) != 2 {
+		t.Errorf("expected registered component to carry the 2 body properties, got %+v", component.OpenAPIV3Schema)
+	}
+}
+
+// TestBuildRequestBody_ComponentNameAvoidsCollision verifies that when the
+// derived body component name already exists as a resolved message/enum name,
+// a suffix is appended so the body schema never clobbers an existing component.
+func TestBuildRequestBody_ComponentNameAvoidsCollision(t *testing.T) {
+	binding := newRequestBodyFixture(t, []string{"name"}, nil, nil)
+	resolvedNames := map[string]string{".example.Existing": "DoThingRequest"}
+	body, schemas := buildRequestBody(binding, "DoThing", map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), resolvedNames)
+	if body == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	const wantRef = "#/components/schemas/DoThingRequestBody"
+	if got := body.OpenAPIV3RequestBody.Content["application/json"].Schema.Ref; got != wantRef {
+		t.Errorf("expected collision-suffixed body $ref %q, got %q", wantRef, got)
+	}
+	if _, ok := schemas["DoThingRequestBody"]; !ok {
+		t.Errorf("expected collision-suffixed component %q to be registered, got keys %v", "DoThingRequestBody", keysOfSchemas(schemas))
+	}
+}
+
+func keysOfSchemas(m map[string]*OpenAPIV3SchemaRef) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
 }
 
 func TestFieldDescription(t *testing.T) {

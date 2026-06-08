@@ -477,12 +477,18 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				}
 
 				schemaMap, messageOneOfSchemas := buildMessageSchemas(param, resolvedNames)
-				requestBody, bodyOneOfSchemas := buildRequestBody(b, schemaMap, param.reg, resolvedNames)
+				requestBody, bodyOneOfSchemas := buildRequestBody(b, operationID, schemaMap, param.reg, resolvedNames)
 				pathParameters := buildPathParameters(b, param.reg, resolvedNames)
 				queryParameters := buildQueryParameters(b, schemaMap, resolvedNames, param.reg)
 				parameters := append(pathParameters, queryParameters...)
 				if requestBody != nil {
-					requestBody.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema.CamelCase()
+					// The body schema is registered as a component and referenced
+					// via $ref, so there is no inline schema to camel-case here
+					// (component schemas are camel-cased at marshal time). Guard the
+					// deref for any path that still emits an inline body schema.
+					if s := requestBody.OpenAPIV3RequestBody.Content["application/json"].Schema; s != nil && s.OpenAPIV3Schema != nil {
+						s.OpenAPIV3Schema.CamelCase()
+					}
 				}
 				responseBody := buildResponseBody(b, param.reg, resolvedNames)
 				if responseBody != nil {
@@ -911,7 +917,7 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 	return parameterRefs
 }
 
-func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry, resolvedNames map[string]string) (*OpenAPIV3RequestBodyRef, map[string]*OpenAPIV3SchemaRef) {
+func buildRequestBody(binding *descriptor.Binding, operationID string, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry, resolvedNames map[string]string) (*OpenAPIV3RequestBodyRef, map[string]*OpenAPIV3SchemaRef) {
 	if binding.Body == nil {
 		return nil, map[string]*OpenAPIV3SchemaRef{}
 	}
@@ -1020,7 +1026,8 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			Type:  "object",
 			OneOf: oneOfSchemaRefs,
 		}
-		schemasToAddToComponents = oneOfSchemas
+		// The oneOf variants are referenced by the wrapper, so register them.
+		maps.Copy(schemasToAddToComponents, oneOfSchemas)
 	} else {
 		for _, schema := range oneOfSchemas {
 			bodySchema = schema.OpenAPIV3Schema
@@ -1028,14 +1035,18 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 		}
 	}
 
+	// Register the top-level body schema as a named component and reference it,
+	// so the request body is a $ref rather than an inline object schema
+	// (ibm-avoid-inline-schemas). The body is operation-specific because path
+	// params are stripped per binding, so it is scoped to the operation id.
+	bodyComponentName := requestBodyComponentName(operationID, resolvedNames)
+	schemasToAddToComponents[bodyComponentName] = &OpenAPIV3SchemaRef{OpenAPIV3Schema: bodySchema}
+
 	bodyContent := make(map[string]OpenAPIV3MediaType)
 	bodyContent["application/json"] = OpenAPIV3MediaType{
 		Schema: &OpenAPIV3SchemaRef{
-			OpenAPIV3Schema: bodySchema,
+			Ref: "#/components/schemas/" + bodyComponentName,
 		},
-	}
-	if len(oneOfSchemas) > 1 {
-		schemasToAddToComponents = oneOfSchemas
 	}
 
 	// If any variant of the request body has required properties, the body
@@ -1054,6 +1065,23 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			Required: bodyRequired,
 		},
 	}, schemasToAddToComponents
+}
+
+// requestBodyComponentName mints a collision-safe component name for a request
+// body schema. It is scoped to the operation id (the body differs per operation
+// because path params are stripped per binding) and checked against the resolved
+// message/enum names so it never clobbers an existing component.
+func requestBodyComponentName(operationID string, resolvedNames map[string]string) string {
+	name := toPascalCase(operationID + "_Request")
+	existing := make(map[string]struct{}, len(resolvedNames)*2)
+	for _, resolved := range resolvedNames {
+		existing[resolved] = struct{}{}
+		existing[toPascalCase(resolved)] = struct{}{}
+	}
+	if _, clash := existing[name]; clash {
+		name += "Body"
+	}
+	return name
 }
 
 type openAPIV3BodyRepresentation struct {
