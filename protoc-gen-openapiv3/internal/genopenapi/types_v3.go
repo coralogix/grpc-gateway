@@ -110,6 +110,18 @@ type OpenAPIV3PathItem struct {
 	Parameters  []OpenAPIV3ParameterRef `json:"parameters,omitempty" yaml:"parameters,omitempty"`
 }
 
+// operations returns the non-nil operations defined on the path item.
+func (p *OpenAPIV3PathItem) operations() []*OpenAPIV3Operation {
+	candidates := []*OpenAPIV3Operation{p.Get, p.Put, p.Post, p.Delete, p.Options, p.Head, p.Patch, p.Trace}
+	ops := make([]*OpenAPIV3Operation, 0, len(candidates))
+	for _, op := range candidates {
+		if op != nil {
+			ops = append(ops, op)
+		}
+	}
+	return ops
+}
+
 type OpenAPIV3Operation struct {
 	Tags                []string                        `json:"tags,omitempty" yaml:"tags,omitempty"`
 	Summary             string                          `json:"summary,omitempty" yaml:"summary,omitempty"`

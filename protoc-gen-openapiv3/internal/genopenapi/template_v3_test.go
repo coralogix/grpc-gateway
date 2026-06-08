@@ -3028,3 +3028,145 @@ func TestMinZero_NilMinItemsOmitted(t *testing.T) {
 		t.Errorf("expected no minimum for a nil pointer, got %s", b)
 	}
 }
+
+func hoistPathParam(name, desc string) OpenAPIV3ParameterRef {
+	return OpenAPIV3ParameterRef{OpenAPIV3Parameter: &OpenAPIV3Parameter{
+		Name:        name,
+		In:          "path",
+		Required:    true,
+		Description: desc,
+		Schema:      &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}},
+	}}
+}
+
+func hoistQueryParam(name string) OpenAPIV3ParameterRef {
+	return OpenAPIV3ParameterRef{OpenAPIV3Parameter: &OpenAPIV3Parameter{
+		Name:   name,
+		In:     "query",
+		Schema: &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}},
+	}}
+}
+
+func paramNames(refs []OpenAPIV3ParameterRef) []string {
+	names := make([]string, 0, len(refs))
+	for _, r := range refs {
+		if r.OpenAPIV3Parameter != nil {
+			names = append(names, r.Name)
+		}
+	}
+	return names
+}
+
+func TestHoistSharedPathParameters(t *testing.T) {
+	t.Run("identical path param across two ops is hoisted", func(t *testing.T) {
+		item := &OpenAPIV3PathItem{
+			Get:    &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{hoistPathParam("id", "Resource id.")}},
+			Delete: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{hoistPathParam("id", "Resource id.")}},
+		}
+		hoistSharedPathParameters(OpenAPIV3Paths{"/v1/things/{id}": item})
+
+		if got := paramNames(item.Parameters); !slices.Equal(got, []string{"id"}) {
+			t.Errorf("path-item parameters = %v, want [id]", got)
+		}
+		if got := paramNames(item.Get.Parameters); len(got) != 0 {
+			t.Errorf("GET parameters = %v, want empty", got)
+		}
+		if got := paramNames(item.Delete.Parameters); len(got) != 0 {
+			t.Errorf("DELETE parameters = %v, want empty", got)
+		}
+	})
+
+	t.Run("differing path param defs are not hoisted", func(t *testing.T) {
+		item := &OpenAPIV3PathItem{
+			Get:    &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{hoistPathParam("id", "Resource id.")}},
+			Delete: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{hoistPathParam("id", "The id to delete.")}},
+		}
+		hoistSharedPathParameters(OpenAPIV3Paths{"/v1/things/{id}": item})
+
+		if len(item.Parameters) != 0 {
+			t.Errorf("path-item parameters = %v, want empty (defs differ)", paramNames(item.Parameters))
+		}
+		if got := paramNames(item.Get.Parameters); !slices.Equal(got, []string{"id"}) {
+			t.Errorf("GET parameters = %v, want [id]", got)
+		}
+		if got := paramNames(item.Delete.Parameters); !slices.Equal(got, []string{"id"}) {
+			t.Errorf("DELETE parameters = %v, want [id]", got)
+		}
+	})
+
+	t.Run("single operation is not hoisted", func(t *testing.T) {
+		item := &OpenAPIV3PathItem{
+			Get: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{hoistPathParam("id", "Resource id.")}},
+		}
+		hoistSharedPathParameters(OpenAPIV3Paths{"/v1/things/{id}": item})
+
+		if len(item.Parameters) != 0 {
+			t.Errorf("path-item parameters = %v, want empty (single op)", paramNames(item.Parameters))
+		}
+		if got := paramNames(item.Get.Parameters); !slices.Equal(got, []string{"id"}) {
+			t.Errorf("GET parameters = %v, want [id]", got)
+		}
+	})
+
+	t.Run("query parameters are never hoisted", func(t *testing.T) {
+		item := &OpenAPIV3PathItem{
+			Get:  &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{hoistQueryParam("filter")}},
+			Post: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{hoistQueryParam("filter")}},
+		}
+		hoistSharedPathParameters(OpenAPIV3Paths{"/v1/things": item})
+
+		if len(item.Parameters) != 0 {
+			t.Errorf("path-item parameters = %v, want empty (query not hoisted)", paramNames(item.Parameters))
+		}
+		if got := paramNames(item.Get.Parameters); !slices.Equal(got, []string{"filter"}) {
+			t.Errorf("GET parameters = %v, want [filter]", got)
+		}
+	})
+
+	t.Run("only the identical param is hoisted; query and differing params stay", func(t *testing.T) {
+		item := &OpenAPIV3PathItem{
+			Get: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{
+				hoistPathParam("id", "Resource id."),
+				hoistPathParam("rev", "Read revision."),
+				hoistQueryParam("filter"),
+			}},
+			Put: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{
+				hoistPathParam("id", "Resource id."),
+				hoistPathParam("rev", "Write revision."),
+				hoistQueryParam("filter"),
+			}},
+		}
+		hoistSharedPathParameters(OpenAPIV3Paths{"/v1/things/{id}/{rev}": item})
+
+		if got := paramNames(item.Parameters); !slices.Equal(got, []string{"id"}) {
+			t.Errorf("path-item parameters = %v, want [id]", got)
+		}
+		if got := paramNames(item.Get.Parameters); !slices.Equal(got, []string{"rev", "filter"}) {
+			t.Errorf("GET parameters = %v, want [rev filter]", got)
+		}
+		if got := paramNames(item.Put.Parameters); !slices.Equal(got, []string{"rev", "filter"}) {
+			t.Errorf("PUT parameters = %v, want [rev filter]", got)
+		}
+	})
+
+	t.Run("multiple identical path params are hoisted in order", func(t *testing.T) {
+		item := &OpenAPIV3PathItem{
+			Get: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{
+				hoistPathParam("x", "X."),
+				hoistPathParam("y", "Y."),
+			}},
+			Delete: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{
+				hoistPathParam("x", "X."),
+				hoistPathParam("y", "Y."),
+			}},
+		}
+		hoistSharedPathParameters(OpenAPIV3Paths{"/v1/a/{x}/b/{y}": item})
+
+		if got := paramNames(item.Parameters); !slices.Equal(got, []string{"x", "y"}) {
+			t.Errorf("path-item parameters = %v, want [x y]", got)
+		}
+		if got := paramNames(item.Get.Parameters); len(got) != 0 {
+			t.Errorf("GET parameters = %v, want empty", got)
+		}
+	})
+}
