@@ -822,25 +822,64 @@ func applyPathParamRenames(path string, renames map[string]string) string {
 	return path
 }
 
+var jsonSchemaSimpleTypeToString = map[options.JSONSchema_JSONSchemaSimpleTypes]string{
+	options.JSONSchema_ARRAY:   "array",
+	options.JSONSchema_BOOLEAN: "boolean",
+	options.JSONSchema_INTEGER: "integer",
+	options.JSONSchema_NULL:    "null",
+	options.JSONSchema_NUMBER:  "number",
+	options.JSONSchema_OBJECT:  "object",
+	options.JSONSchema_STRING:  "string",
+}
+
+// inlineResponseSchema renders an annotated non-$ref response schema (e.g.
+// json_schema: {type: STRING}) so the body contract is preserved.
+func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
+	s := &OpenAPIV3Schema{
+		Title:            js.Title,
+		Description:      js.Description,
+		Format:           js.Format,
+		Pattern:          js.Pattern,
+		Enum:             js.Enum,
+		Required:         js.Required,
+		Maximum:          js.Maximum,
+		Minimum:          js.Minimum,
+		ExclusiveMaximum: js.ExclusiveMaximum,
+		ExclusiveMinimum: js.ExclusiveMinimum,
+		MultipleOf:       js.MultipleOf,
+		MaxLength:        js.MaxLength,
+		ReadOnly:         js.ReadOnly,
+	}
+	if len(js.Type) > 0 {
+		s.Type = jsonSchemaSimpleTypeToString[js.Type[0]]
+	}
+	if js.MinLength != 0 {
+		s.MinLength = uint64Ptr(js.MinLength)
+	}
+	if js.Example != "" {
+		s.Example = RawExample(js.Example)
+	}
+	return s
+}
+
 func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) OpenAPIV3Responses {
 	responses := OpenAPIV3Responses{}
 	for statusCode, response := range operation.Responses {
 		if response != nil {
 			if statusCode != successStatusCode {
-				var ref string
 				var content map[string]OpenAPIV3MediaType
-				// Emit content only when a body schema is referenced. A
-				// description-only response has no body; a fabricated empty
-				// media type trips ibm-content-contains-schema. Examples, if
+				// Emit content only when the annotation defines a schema ($ref or
+				// inline). A description-only response has no body; a fabricated
+				// empty media type trips ibm-content-contains-schema. Examples, if
 				// any, are added back by applyResponseExamples below.
-				if response.Schema != nil && response.Schema.JsonSchema != nil && response.Schema.JsonSchema.Ref != "" {
-					ref = "#/components/schemas/" + response.Schema.JsonSchema.Ref
-					content = make(map[string]OpenAPIV3MediaType)
-					content["application/json"] = OpenAPIV3MediaType{
-						Schema: &OpenAPIV3SchemaRef{
-							Ref: ref,
-						},
+				if js := response.Schema.GetJsonSchema(); js != nil {
+					var schemaRef *OpenAPIV3SchemaRef
+					if js.Ref != "" {
+						schemaRef = &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + js.Ref}
+					} else {
+						schemaRef = &OpenAPIV3SchemaRef{OpenAPIV3Schema: inlineResponseSchema(js)}
 					}
+					content = map[string]OpenAPIV3MediaType{"application/json": {Schema: schemaRef}}
 				}
 				headers := make(map[string]OpenAPIV3HeaderRef)
 				for headerName, header := range response.Headers {

@@ -2383,6 +2383,40 @@ func TestExtractResponses_ExamplesWithoutSchemaStillEmitContent(t *testing.T) {
 	}
 }
 
+// TestExtractResponses_InlineSchemaIsRendered guards that an annotated non-$ref
+// (inline) response schema is rendered as content rather than dropped.
+func TestExtractResponses_InlineSchemaIsRendered(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"400": {
+				Description: "Bad Request",
+				Schema: &options.Schema{
+					JsonSchema: &options.JSONSchema{
+						Type:   []options.JSONSchema_JSONSchemaSimpleTypes{options.JSONSchema_STRING},
+						Format: "uuid",
+					},
+				},
+			},
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+
+	resp, ok := responses["400"]
+	if !ok {
+		t.Fatal("expected a 400 response")
+	}
+	mt, ok := resp.Content["application/json"]
+	if !ok || mt.Schema == nil || mt.Schema.OpenAPIV3Schema == nil {
+		t.Fatalf("expected an inline schema to be rendered, got %#v", resp.Content)
+	}
+	if got := mt.Schema.OpenAPIV3Schema.Type; got != "string" {
+		t.Errorf("expected type %q, got %q", "string", got)
+	}
+	if got := mt.Schema.OpenAPIV3Schema.Format; got != "uuid" {
+		t.Errorf("expected format %q, got %q", "uuid", got)
+	}
+}
+
 func TestExtractResponses_MultipleCustomResponsesEachCarrySchema(t *testing.T) {
 	op := &options.Operation{
 		Responses: map[string]*options.Response{
