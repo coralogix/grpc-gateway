@@ -2644,6 +2644,24 @@ func TestStringInt_Wrappers(t *testing.T) {
 	}
 }
 
+func TestGoogleTypeDecimal_RendersAsString(t *testing.T) {
+	field := makeWrapperField("cx_quota_units", ".google.type.Decimal", nil)
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for name, s := range map[string]*OpenAPIV3Schema{"withRefs": withRefs, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Type != "string" {
+				t.Fatalf("expected google.type.Decimal to render as type=string, got %q", s.Type)
+			}
+			if s.Format != "" {
+				t.Errorf("expected no string format for google.type.Decimal, got %q", s.Format)
+			}
+			if derefMinLength(s.MinLength) != 0 {
+				t.Errorf("expected minLength=0, got %d", derefMinLength(s.MinLength))
+			}
+		})
+	}
+}
+
 func TestStringInt_TopLevelWrapperResponse_Cleaned(t *testing.T) {
 	// A top-level Int64Value/UInt64Value RPC response is emitted straight from
 	// the well-known map (bypassing the field switch); cleanWellKnownStringInt

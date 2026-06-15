@@ -105,6 +105,9 @@ var wellKnownTypesToOpenAPIV3SchemaMapping = map[string]*OpenAPIV3Schema{
 	".google.protobuf.Any": {
 		Type: "object",
 	},
+	".google.type.Decimal": {
+		Type: "string",
+	},
 }
 
 func openapiTypeCategory(schema *OpenAPIV3Schema) string {
