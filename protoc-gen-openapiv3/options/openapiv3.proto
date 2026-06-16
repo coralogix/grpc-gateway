@@ -548,8 +548,12 @@ message JSONSchema {
   double maximum = 11;
   bool exclusive_maximum = 12;
   // minimum represents an inclusive lower limit for a numeric instance. The
-  // value of MUST be a number,
-  double minimum = 13;
+  // value of MUST be a number.
+  //
+  // This field is optional so annotations can intentionally set minimum: 0.
+  // Non-optional proto3 scalars cannot distinguish unset from an explicit zero,
+  // which would make generators drop a valid zero lower bound.
+  optional double minimum = 13;
   bool exclusive_minimum = 14;
   uint64 max_length = 15;
   uint64 min_length = 16;
