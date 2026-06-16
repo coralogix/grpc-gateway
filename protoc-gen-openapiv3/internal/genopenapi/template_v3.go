@@ -324,15 +324,13 @@ func cleanWellKnownResponseSchema(schema *OpenAPIV3Schema, fqmn string) *OpenAPI
 func uint64Ptr(v uint64) *uint64    { return &v }
 func float64Ptr(v float64) *float64 { return &v }
 
-// optionalMinimum returns a pointer to a non-zero minimum, or nil when it is 0.
-// proto3 cannot distinguish an unset minimum from an explicit 0, so for signed
-// numeric types 0 stays omitted (only unsigned integers, whose natural lower
-// bound is 0, force-emit minimum: 0 via float64Ptr).
-func optionalMinimum(v float64) *float64 {
-	if v == 0 {
-		return nil
+// unsignedMinimum returns an annotated unsigned minimum raised to the natural
+// lower bound of 0, or emits 0 by default when no annotation is present.
+func unsignedMinimum(v *float64) *float64 {
+	if v == nil || *v < 0 {
+		return float64Ptr(0)
 	}
-	return &v
+	return float64Ptr(*v)
 }
 
 func applyTemplateV3(param param) (OpenAPIV3Document, error) {
@@ -1955,7 +1953,7 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, registry *descriptor.Registry, resolvedNames map[string]string) (*OpenAPIV3SchemaRef, RawExample) {
 	var title string
 	var maximum float64
-	var minimum float64
+	var minimum *float64
 	var exclusiveMaximum bool
 	var exclusiveMinimum bool
 	var pattern string
@@ -2037,7 +2035,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Format:              "double",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             optionalMinimum(minimum),
+			Minimum:             minimum,
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2062,7 +2060,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Format:              "float",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             optionalMinimum(minimum),
+			Minimum:             minimum,
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2089,7 +2087,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Maximum: maximum,
 			// Unsigned integer: natural lower bound is 0, so emit minimum: 0 by
 			// default (ibm-integer-attributes). An override raises it.
-			Minimum:             float64Ptr(max(minimum, 0)),
+			Minimum:             unsignedMinimum(minimum),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2171,7 +2169,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Format:              "int32",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             optionalMinimum(minimum),
+			Minimum:             minimum,
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2273,9 +2271,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 				if field.TypeName != nil && *field.TypeName == ".google.protobuf.UInt32Value" {
 					// Unsigned 32-bit wrapper renders as type: integer; emit
 					// minimum: 0 by default. An override raises the floor.
-					schemaCopy.Minimum = float64Ptr(max(minimum, 0))
+					schemaCopy.Minimum = unsignedMinimum(minimum)
 				} else {
-					schemaCopy.Minimum = optionalMinimum(minimum)
+					schemaCopy.Minimum = minimum
 				}
 				schemaCopy.ExclusiveMaximum = exclusiveMaximum
 				schemaCopy.ExclusiveMinimum = exclusiveMinimum
@@ -2449,7 +2447,7 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) (*OpenAPIV3SchemaRef, RawExample) {
 	var title string
 	var maximum float64
-	var minimum float64
+	var minimum *float64
 	var exclusiveMaximum bool
 	var exclusiveMinimum bool
 	var pattern string
@@ -2529,7 +2527,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Format:              "double",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             optionalMinimum(minimum),
+			Minimum:             minimum,
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2556,7 +2554,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Maximum: maximum,
 			// Unsigned integer: natural lower bound is 0, so emit minimum: 0 by
 			// default (ibm-integer-attributes). An override raises it.
-			Minimum:             float64Ptr(max(minimum, 0)),
+			Minimum:             unsignedMinimum(minimum),
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2638,7 +2636,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Format:              "float",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             optionalMinimum(minimum),
+			Minimum:             minimum,
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2663,7 +2661,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Format:              "int32",
 			Title:               title,
 			Maximum:             maximum,
-			Minimum:             optionalMinimum(minimum),
+			Minimum:             minimum,
 			ExclusiveMaximum:    exclusiveMaximum,
 			ExclusiveMinimum:    exclusiveMinimum,
 			MultipleOf:          multipleOf,
@@ -2763,9 +2761,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 				if field.TypeName != nil && *field.TypeName == ".google.protobuf.UInt32Value" {
 					// Unsigned 32-bit wrapper renders as type: integer; emit
 					// minimum: 0 by default. An override raises the floor.
-					schemaCopy.Minimum = float64Ptr(max(minimum, 0))
+					schemaCopy.Minimum = unsignedMinimum(minimum)
 				} else {
-					schemaCopy.Minimum = optionalMinimum(minimum)
+					schemaCopy.Minimum = minimum
 				}
 				schemaCopy.ExclusiveMaximum = exclusiveMaximum
 				schemaCopy.ExclusiveMinimum = exclusiveMinimum

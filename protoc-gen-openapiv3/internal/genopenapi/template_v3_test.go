@@ -1571,6 +1571,47 @@ func newQueryParamFixture(t *testing.T, fieldNames []string, descriptions map[st
 	return binding, reg
 }
 
+func newQueryParamFixtureWithFields(t *testing.T, fieldDescriptors ...*descriptorpb.FieldDescriptorProto) (*descriptor.Binding, *descriptor.Registry) {
+	t.Helper()
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name:  proto.String("ReqMsg"),
+		Field: fieldDescriptors,
+	}
+	file := &descriptor.File{
+		FileDescriptorProto: &descriptorpb.FileDescriptorProto{
+			Name:    proto.String("example.proto"),
+			Package: proto.String("example"),
+			Options: &descriptorpb.FileOptions{
+				GoPackage: proto.String("example.com/path/to/example;example"),
+			},
+			MessageType: []*descriptorpb.DescriptorProto{msgDesc},
+		},
+	}
+	msg := &descriptor.Message{DescriptorProto: msgDesc, File: file}
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("DoThing"),
+			InputType:  proto.String(".example.ReqMsg"),
+			OutputType: proto.String(".example.ReqMsg"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "GET",
+		Method:     method,
+	}
+
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{
+		ProtoFile: []*descriptorpb.FileDescriptorProto{file.FileDescriptorProto},
+	}); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+	return binding, reg
+}
+
 // TestBuildQueryParameters_DescriptionFromFieldExtension covers the scalar
 // (non-enum) branch in buildQueryParameters.
 func TestBuildQueryParameters_DescriptionFromFieldExtension(t *testing.T) {
@@ -2569,7 +2610,7 @@ func TestStringInt_ScalarTypes_DefaultPatterns(t *testing.T) {
 
 func TestStringInt_StrayNumericBoundsDoNotLeak(t *testing.T) {
 	field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT64, &options.JSONSchema{
-		Minimum: 5,
+		Minimum: proto.Float64(5),
 		Maximum: 100,
 	})
 	withRefs, plain := inlineSchemasBothSwitches(t, field)
@@ -2985,7 +3026,7 @@ func TestMinimum_Uint32EmitsZeroByDefault(t *testing.T) {
 }
 
 func TestMinimum_Uint32OverrideRaisesFloor(t *testing.T) {
-	field := makeSingularFieldWithExtension("count", descriptorpb.FieldDescriptorProto_TYPE_UINT32, &options.JSONSchema{Minimum: 5})
+	field := makeSingularFieldWithExtension("count", descriptorpb.FieldDescriptorProto_TYPE_UINT32, &options.JSONSchema{Minimum: proto.Float64(5)})
 	s := mustInlinePlain(t, field)
 	if s.Minimum == nil || *s.Minimum != 5 {
 		t.Errorf("expected minimum=5 from override, got %v", s.Minimum)
@@ -2994,11 +3035,77 @@ func TestMinimum_Uint32OverrideRaisesFloor(t *testing.T) {
 
 func TestMinimum_SignedIntNoFabricatedMinimum(t *testing.T) {
 	// int64 now renders as type: string, so only int32 remains a signed integer
-	// schema; it must not get a fabricated minimum (proto3 can't express 0).
+	// schema; it must not get a fabricated minimum when no minimum annotation is
+	// present.
 	field := makeSingularFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_INT32, &options.JSONSchema{})
 	s := mustInlinePlain(t, field)
 	if s.Minimum != nil {
 		t.Errorf("signed int must not get a fabricated minimum, got %v", *s.Minimum)
+	}
+}
+
+func TestMinimum_SignedIntExplicitZeroSchemaProperty(t *testing.T) {
+	field := makeSingularFieldWithExtension("page_offset", descriptorpb.FieldDescriptorProto_TYPE_INT32, &options.JSONSchema{
+		Description: "Zero-based page offset.",
+		Minimum:     proto.Float64(0),
+		Maximum:     10000,
+	})
+	reg := descriptor.NewRegistry()
+	withRefs, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, map[string]string{})
+	plain := mustInlinePlain(t, field)
+
+	for name, s := range map[string]*OpenAPIV3Schema{"withRefs": withRefs.OpenAPIV3Schema, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Type != "integer" || s.Format != "int32" {
+				t.Fatalf("expected int32 integer schema, got type=%q format=%q", s.Type, s.Format)
+			}
+			if s.Minimum == nil || *s.Minimum != 0 {
+				t.Fatalf("expected explicit minimum=0 to be emitted, got %v", s.Minimum)
+			}
+			if s.Maximum != 10000 {
+				t.Errorf("expected maximum=10000, got %v", s.Maximum)
+			}
+		})
+	}
+}
+
+func TestMinimum_SignedIntExplicitZeroQueryParameter(t *testing.T) {
+	opts := &descriptorpb.FieldOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Field, &options.JSONSchema{
+		Description: "Zero-based page offset.",
+		Minimum:     proto.Float64(0),
+		Maximum:     10000,
+	})
+	fieldType := descriptorpb.FieldDescriptorProto_TYPE_INT32
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	binding, reg := newQueryParamFixtureWithFields(t, &descriptorpb.FieldDescriptorProto{
+		Name:    proto.String("page_offset"),
+		Number:  proto.Int32(1),
+		Type:    &fieldType,
+		Label:   &label,
+		Options: opts,
+	})
+
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	if len(params) != 1 {
+		t.Fatalf("expected 1 query parameter, got %d", len(params))
+	}
+	param := params[0]
+	if param.Name != "page_offset" || param.In != "query" {
+		t.Fatalf("unexpected parameter: name=%q in=%q", param.Name, param.In)
+	}
+	if param.Schema == nil || param.Schema.OpenAPIV3Schema == nil {
+		t.Fatal("expected inline query parameter schema")
+	}
+	s := param.Schema.OpenAPIV3Schema
+	if s.Type != "integer" || s.Format != "int32" {
+		t.Fatalf("expected int32 integer schema, got type=%q format=%q", s.Type, s.Format)
+	}
+	if s.Minimum == nil || *s.Minimum != 0 {
+		t.Fatalf("expected explicit minimum=0 to be emitted, got %v", s.Minimum)
+	}
+	if s.Maximum != 10000 {
+		t.Errorf("expected maximum=10000, got %v", s.Maximum)
 	}
 }
 
