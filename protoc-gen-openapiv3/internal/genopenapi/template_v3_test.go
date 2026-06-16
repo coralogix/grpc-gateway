@@ -2644,19 +2644,74 @@ func TestStringInt_Wrappers(t *testing.T) {
 	}
 }
 
-func TestGoogleTypeDecimal_RendersAsString(t *testing.T) {
+func TestGoogleTypeDecimal_RendersAsObject(t *testing.T) {
 	field := makeWrapperField("cx_quota_units", ".google.type.Decimal", nil)
 	withRefs, plain := inlineSchemasBothSwitches(t, field)
 	for name, s := range map[string]*OpenAPIV3Schema{"withRefs": withRefs, "plain": plain} {
 		t.Run(name, func(t *testing.T) {
-			if s.Type != "string" {
-				t.Fatalf("expected google.type.Decimal to render as type=string, got %q", s.Type)
+			if s.Type != "object" {
+				t.Fatalf("expected google.type.Decimal to render as type=object, got %q", s.Type)
 			}
-			if s.Format != "" {
-				t.Errorf("expected no string format for google.type.Decimal, got %q", s.Format)
+			value := s.Properties["value"]
+			if value == nil || value.OpenAPIV3Schema == nil {
+				t.Fatal("expected google.type.Decimal schema to contain a value property")
 			}
-			if derefMinLength(s.MinLength) != 0 {
-				t.Errorf("expected minLength=0, got %d", derefMinLength(s.MinLength))
+			if value.Type != "string" {
+				t.Errorf("expected value property type=string, got %q", value.Type)
+			}
+			if derefMinLength(value.MinLength) != 0 {
+				t.Errorf("expected value property minLength=0, got %d", derefMinLength(value.MinLength))
+			}
+			if len(s.Required) != 0 {
+				t.Errorf("expected no required fields for google.type.Decimal, got %v", s.Required)
+			}
+		})
+	}
+}
+
+func TestGoogleTypeDecimal_AppliesStringOptionsToValue(t *testing.T) {
+	field := makeWrapperField("cx_quota_units", ".google.type.Decimal", &options.JSONSchema{
+		Pattern:   "^-?[0-9]+(\\.[0-9]+)?$",
+		Format:    "decimal",
+		MinLength: 1,
+		MaxLength: 32,
+	})
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for name, s := range map[string]*OpenAPIV3Schema{"withRefs": withRefs, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Type != "object" {
+				t.Fatalf("expected google.type.Decimal to render as type=object, got %q", s.Type)
+			}
+			if s.Pattern != "" || s.Format != "" || s.MaxLength != 0 || s.MinLength != nil {
+				t.Fatalf("expected string options to stay off Decimal object, got pattern=%q format=%q maxLength=%d minLength=%v",
+					s.Pattern, s.Format, s.MaxLength, s.MinLength)
+			}
+			value := s.Properties["value"]
+			if value == nil || value.OpenAPIV3Schema == nil {
+				t.Fatal("expected google.type.Decimal schema to contain a value property")
+			}
+			if value.Pattern != "^-?[0-9]+(\\.[0-9]+)?$" {
+				t.Errorf("expected value pattern override, got %q", value.Pattern)
+			}
+			if value.Format != "decimal" {
+				t.Errorf("expected value format override, got %q", value.Format)
+			}
+			if value.MaxLength != 32 || derefMinLength(value.MinLength) != 1 {
+				t.Errorf("expected value minLength=1 maxLength=32, got %d/%d", derefMinLength(value.MinLength), value.MaxLength)
+			}
+		})
+	}
+}
+
+func TestGoogleTypeDecimal_ObjectExamplePreserved(t *testing.T) {
+	field := makeWrapperField("cx_quota_units", ".google.type.Decimal", &options.JSONSchema{
+		Example: `{"value":"1.5"}`,
+	})
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for name, s := range map[string]*OpenAPIV3Schema{"withRefs": withRefs, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if got := string(s.Example); got != `{"value":"1.5"}` {
+				t.Errorf("expected Decimal object example to be preserved, got %q", got)
 			}
 		})
 	}
