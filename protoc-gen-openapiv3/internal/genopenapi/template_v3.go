@@ -106,8 +106,46 @@ var wellKnownTypesToOpenAPIV3SchemaMapping = map[string]*OpenAPIV3Schema{
 		Type: "object",
 	},
 	".google.type.Decimal": {
-		Type: "string",
+		Type: "object",
+		Properties: map[string]*OpenAPIV3SchemaRef{
+			"value": {
+				OpenAPIV3Schema: &OpenAPIV3Schema{
+					Type:      "string",
+					MinLength: uint64Ptr(0),
+				},
+			},
+		},
 	},
+}
+
+func isGoogleTypeDecimal(f *descriptor.Field) bool {
+	return f.TypeName != nil && *f.TypeName == ".google.type.Decimal"
+}
+
+func applyDecimalStringOptions(schema *OpenAPIV3Schema, pattern, format string, maxLength, minLength uint64) {
+	value := schema.Properties["value"]
+	if value == nil || value.OpenAPIV3Schema == nil {
+		return
+	}
+	valueSchema := *value.OpenAPIV3Schema
+	valueSchema.Pattern = pattern
+	valueSchema.Format = format
+	valueSchema.MaxLength = maxLength
+	valueSchema.MinLength = uint64Ptr(minLength)
+
+	properties := maps.Clone(schema.Properties)
+	properties["value"] = &OpenAPIV3SchemaRef{
+		Ref:             value.Ref,
+		OpenAPIV3Schema: &valueSchema,
+	}
+	schema.Properties = properties
+}
+
+func routeDecimalObjectExample(jsonExample string, fieldExample, arrayExample RawExample) (RawExample, RawExample) {
+	if strings.HasPrefix(strings.TrimSpace(jsonExample), "{") {
+		return RawExample(jsonExample), nil
+	}
+	return fieldExample, arrayExample
 }
 
 func openapiTypeCategory(schema *OpenAPIV3Schema) string {
@@ -2219,7 +2257,10 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			schemaCopy.Description = description
 			schemaCopy.Deprecated = deprecated
 			schemaCopy.ReadOnly = readOnly
-			if schemaCopy.Type == "string" && (schemaCopy.Format == "int64" || schemaCopy.Format == "uint64") {
+			if isGoogleTypeDecimal(field) {
+				applyDecimalStringOptions(&schemaCopy, pattern, format, maxLength, minLength)
+				fieldExample, arrayExample = routeDecimalObjectExample(jsonExample, fieldExample, arrayExample)
+			} else if schemaCopy.Type == "string" && (schemaCopy.Format == "int64" || schemaCopy.Format == "uint64") {
 				// Int64Value/UInt64Value wrappers render as type: string: drop the
 				// invalid format/bounds, emit a digit pattern + length bounds.
 				signed := schemaCopy.Format == "int64"
@@ -2706,7 +2747,10 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			schemaCopy.Description = description
 			schemaCopy.Deprecated = deprecated
 			schemaCopy.ReadOnly = readOnly
-			if schemaCopy.Type == "string" && (schemaCopy.Format == "int64" || schemaCopy.Format == "uint64") {
+			if isGoogleTypeDecimal(field) {
+				applyDecimalStringOptions(&schemaCopy, pattern, format, maxLength, minLength)
+				fieldExample, arrayExample = routeDecimalObjectExample(jsonExample, fieldExample, arrayExample)
+			} else if schemaCopy.Type == "string" && (schemaCopy.Format == "int64" || schemaCopy.Format == "uint64") {
 				// Int64Value/UInt64Value wrappers render as type: string: drop the
 				// invalid format/bounds, emit a digit pattern + length bounds.
 				signed := schemaCopy.Format == "int64"
