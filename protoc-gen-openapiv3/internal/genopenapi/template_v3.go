@@ -110,8 +110,9 @@ var wellKnownTypesToOpenAPIV3SchemaMapping = map[string]*OpenAPIV3Schema{
 		Properties: map[string]*OpenAPIV3SchemaRef{
 			"value": {
 				OpenAPIV3Schema: &OpenAPIV3Schema{
-					Type:      "string",
-					MinLength: uint64Ptr(0),
+					Type:        "string",
+					Description: "Decimal value encoded as a string, using optional sign, fraction, and exponent notation.",
+					MinLength:   uint64Ptr(0),
 				},
 			},
 		},

@@ -2700,6 +2700,9 @@ func TestGoogleTypeDecimal_RendersAsObject(t *testing.T) {
 			if value.Type != "string" {
 				t.Errorf("expected value property type=string, got %q", value.Type)
 			}
+			if value.Description != "Decimal value encoded as a string, using optional sign, fraction, and exponent notation." {
+				t.Errorf("expected value property description, got %q", value.Description)
+			}
 			if derefMinLength(value.MinLength) != 0 {
 				t.Errorf("expected value property minLength=0, got %d", derefMinLength(value.MinLength))
 			}
