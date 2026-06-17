@@ -629,6 +629,10 @@ message JSONSchema {
   // extra functionality that is not covered by the standard OpenAPI Specification.
   // See: https://swagger.io/docs/specification/2-0/swagger-extensions/
   map<string, google.protobuf.Value> extensions = 48;
+  // Schema overrides for map value schemas. When this JSONSchema annotates a
+  // map field, value_schema is merged into the generated additionalProperties
+  // schema while the outer field annotation still describes the map object.
+  JSONSchema value_schema = 49;
 }
 
 // `Tag` is a representation of OpenAPI v2 specification's Tag object.

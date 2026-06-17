@@ -13,7 +13,10 @@ import (
 	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
+	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/known/timestamppb"
+	"google.golang.org/protobuf/types/known/wrapperspb"
 	"google.golang.org/protobuf/types/pluginpb"
 )
 
@@ -2407,6 +2410,264 @@ func makeFieldWithExtension(name string, fieldType descriptorpb.FieldDescriptorP
 	}
 }
 
+func makeMapFieldWithExtension(t *testing.T, name string, valueType descriptorpb.FieldDescriptorProto_Type, ext *options.JSONSchema) (*descriptor.Field, *descriptor.Registry) {
+	t.Helper()
+
+	opts := &descriptorpb.FieldOptions{}
+	if ext != nil {
+		proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	}
+
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	stringType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	messageType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	entryName := mapEntryName(name)
+	entryTypeName := ".example.MapMsg." + entryName
+
+	entry := &descriptorpb.DescriptorProto{
+		Name: proto.String(entryName),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:   proto.String("key"),
+				Number: proto.Int32(1),
+				Label:  &optional,
+				Type:   &stringType,
+			},
+			{
+				Name:   proto.String("value"),
+				Number: proto.Int32(2),
+				Label:  &optional,
+				Type:   &valueType,
+			},
+		},
+		Options: &descriptorpb.MessageOptions{
+			MapEntry: proto.Bool(true),
+		},
+	}
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("MapMsg"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     proto.String(name),
+				Number:   proto.Int32(1),
+				Label:    &repeated,
+				Type:     &messageType,
+				TypeName: proto.String(entryTypeName),
+				Options:  opts,
+			},
+		},
+		NestedType: []*descriptorpb.DescriptorProto{entry},
+	}
+
+	file := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("map_value_schema.proto"),
+		Package: proto.String("example"),
+		Syntax:  proto.String("proto3"),
+		Options: &descriptorpb.FileOptions{
+			GoPackage: proto.String("example.com/path/to/example;example"),
+		},
+		MessageType: []*descriptorpb.DescriptorProto{msgDesc},
+	}
+
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{ProtoFile: []*descriptorpb.FileDescriptorProto{file}}); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+
+	msg, err := reg.LookupMsg("", ".example.MapMsg")
+	if err != nil {
+		t.Fatalf("LookupMsg: %v", err)
+	}
+	if len(msg.Fields) != 1 {
+		t.Fatalf("expected one field, got %d", len(msg.Fields))
+	}
+	return msg.Fields[0], reg
+}
+
+func makeMessageMapFieldWithExtension(t *testing.T, name string, ext *options.JSONSchema) (*descriptor.Field, *descriptor.Registry, map[string]string, map[string]*OpenAPIV3SchemaRef) {
+	t.Helper()
+
+	opts := &descriptorpb.FieldOptions{}
+	if ext != nil {
+		proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	}
+
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	stringType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	messageType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	entryName := mapEntryName(name)
+	entryTypeName := ".example.MapMsg." + entryName
+	valueTypeName := ".example.ValueMsg"
+
+	valueMsg := &descriptorpb.DescriptorProto{
+		Name: proto.String("ValueMsg"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:   proto.String("name"),
+				Number: proto.Int32(1),
+				Label:  &optional,
+				Type:   &stringType,
+			},
+		},
+	}
+	entry := &descriptorpb.DescriptorProto{
+		Name: proto.String(entryName),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:   proto.String("key"),
+				Number: proto.Int32(1),
+				Label:  &optional,
+				Type:   &stringType,
+			},
+			{
+				Name:     proto.String("value"),
+				Number:   proto.Int32(2),
+				Label:    &optional,
+				Type:     &messageType,
+				TypeName: proto.String(valueTypeName),
+			},
+		},
+		Options: &descriptorpb.MessageOptions{
+			MapEntry: proto.Bool(true),
+		},
+	}
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("MapMsg"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     proto.String(name),
+				Number:   proto.Int32(1),
+				Label:    &repeated,
+				Type:     &messageType,
+				TypeName: proto.String(entryTypeName),
+				Options:  opts,
+			},
+		},
+		NestedType: []*descriptorpb.DescriptorProto{entry},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("message_map_value_schema.proto"),
+		Package: proto.String("example"),
+		Syntax:  proto.String("proto3"),
+		Options: &descriptorpb.FileOptions{
+			GoPackage: proto.String("example.com/path/to/example;example"),
+		},
+		MessageType: []*descriptorpb.DescriptorProto{msgDesc, valueMsg},
+	}
+
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{ProtoFile: []*descriptorpb.FileDescriptorProto{file}}); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+
+	msg, err := reg.LookupMsg("", ".example.MapMsg")
+	if err != nil {
+		t.Fatalf("LookupMsg: %v", err)
+	}
+	if len(msg.Fields) != 1 {
+		t.Fatalf("expected one field, got %d", len(msg.Fields))
+	}
+	resolvedNames := map[string]string{
+		valueTypeName: "ValueMsg",
+	}
+	schemaMap := map[string]*OpenAPIV3SchemaRef{
+		valueTypeName: {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}},
+	}
+	return msg.Fields[0], reg, resolvedNames, schemaMap
+}
+
+func makeWellKnownMapFieldWithExtension(t *testing.T, name, valueTypeName string, dependency *descriptorpb.FileDescriptorProto, ext *options.JSONSchema) (*descriptor.Field, *descriptor.Registry) {
+	t.Helper()
+
+	opts := &descriptorpb.FieldOptions{}
+	if ext != nil {
+		proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	}
+
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	stringType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	messageType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	entryName := mapEntryName(name)
+	entryTypeName := ".example.MapMsg." + entryName
+
+	entry := &descriptorpb.DescriptorProto{
+		Name: proto.String(entryName),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:   proto.String("key"),
+				Number: proto.Int32(1),
+				Label:  &optional,
+				Type:   &stringType,
+			},
+			{
+				Name:     proto.String("value"),
+				Number:   proto.Int32(2),
+				Label:    &optional,
+				Type:     &messageType,
+				TypeName: proto.String(valueTypeName),
+			},
+		},
+		Options: &descriptorpb.MessageOptions{
+			MapEntry: proto.Bool(true),
+		},
+	}
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("MapMsg"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     proto.String(name),
+				Number:   proto.Int32(1),
+				Label:    &repeated,
+				Type:     &messageType,
+				TypeName: proto.String(entryTypeName),
+				Options:  opts,
+			},
+		},
+		NestedType: []*descriptorpb.DescriptorProto{entry},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:       proto.String("well_known_map_value_schema.proto"),
+		Package:    proto.String("example"),
+		Syntax:     proto.String("proto3"),
+		Dependency: []string{dependency.GetName()},
+		Options: &descriptorpb.FileOptions{
+			GoPackage: proto.String("example.com/path/to/example;example"),
+		},
+		MessageType: []*descriptorpb.DescriptorProto{msgDesc},
+	}
+
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{ProtoFile: []*descriptorpb.FileDescriptorProto{dependency, file}}); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+
+	msg, err := reg.LookupMsg("", ".example.MapMsg")
+	if err != nil {
+		t.Fatalf("LookupMsg: %v", err)
+	}
+	if len(msg.Fields) != 1 {
+		t.Fatalf("expected one field, got %d", len(msg.Fields))
+	}
+	return msg.Fields[0], reg
+}
+
+func mapEntryName(fieldName string) string {
+	var b strings.Builder
+	for _, part := range strings.Split(fieldName, "_") {
+		if part == "" {
+			continue
+		}
+		b.WriteString(strings.ToUpper(part[:1]))
+		b.WriteString(part[1:])
+	}
+	b.WriteString("Entry")
+	return b.String()
+}
+
 // exampleFromBothSwitches returns the emitted Example via both rendering
 // functions, so tests can assert they agree.
 func exampleFromBothSwitches(t *testing.T, field *descriptor.Field) (withRefs RawExample, plain RawExample) {
@@ -2982,6 +3243,291 @@ func mustInlinePlain(t *testing.T, field *descriptor.Field) *OpenAPIV3Schema {
 	return ref.OpenAPIV3Schema
 }
 
+func mapSchemasFromBothSwitches(t *testing.T, field *descriptor.Field, reg *descriptor.Registry) map[string]*OpenAPIV3Schema {
+	t.Helper()
+	withRefs := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+	plain := buildPropertySchemaFromField(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	for name, ref := range map[string]*OpenAPIV3SchemaRef{"withRefs": withRefs, "plain": plain} {
+		if ref == nil || ref.OpenAPIV3Schema == nil {
+			t.Fatalf("%s: expected non-nil inline schema", name)
+		}
+	}
+	return map[string]*OpenAPIV3Schema{
+		"withRefs": withRefs.OpenAPIV3Schema,
+		"plain":    plain.OpenAPIV3Schema,
+	}
+}
+
+func mustAdditionalPropertiesSchema(t *testing.T, schema *OpenAPIV3Schema) *OpenAPIV3Schema {
+	t.Helper()
+	ref, ok := schema.AdditionalProperties.(*OpenAPIV3SchemaRef)
+	if !ok || ref == nil || ref.OpenAPIV3Schema == nil {
+		t.Fatalf("expected additionalProperties schema ref, got %#v", schema.AdditionalProperties)
+	}
+	return ref.OpenAPIV3Schema
+}
+
+func TestApplyValueSchema_GenericMetadata(t *testing.T) {
+	base := &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "boolean"}}
+
+	got := applyValueSchemaForMapValue(base, &options.JSONSchema{
+		Title:       "Map value",
+		Description: "Value metadata.",
+		ReadOnly:    true,
+		Example:     "true",
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_BOOL, nil), "")
+
+	if base.Title != "" || base.Description != "" {
+		t.Fatal("applyValueSchema must copy the base schema instead of mutating it")
+	}
+	s := got.OpenAPIV3Schema
+	if s.Title != "Map value" || s.Description != "Value metadata." {
+		t.Fatalf("expected title/description overrides, got %q/%q", s.Title, s.Description)
+	}
+	if !s.ReadOnly {
+		t.Fatal("expected readOnly=true")
+	}
+	if string(s.Example) != "true" {
+		t.Fatalf("expected example=true, got %s", s.Example)
+	}
+}
+
+func TestApplyValueSchema_NumericConstraints(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type:   "integer",
+		Format: "int32",
+	}}, &options.JSONSchema{
+		MultipleOf:       2,
+		Maximum:          100,
+		Minimum:          proto.Float64(0),
+		ExclusiveMaximum: true,
+		ExclusiveMinimum: true,
+		MaxLength:        99,
+		Pattern:          "^[0-9]+$",
+		MaxItems:         9,
+		MaxProperties:    7,
+		Format:           "float",
+		Enum:             []string{"1", "2"},
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_INT32, nil), "")
+
+	s := got.OpenAPIV3Schema
+	if s.MultipleOf != 2 || s.Maximum != 100 {
+		t.Fatalf("expected numeric multipleOf/maximum, got %v/%v", s.MultipleOf, s.Maximum)
+	}
+	if s.Minimum == nil || *s.Minimum != 0 {
+		t.Fatalf("expected numeric minimum=0, got %v", s.Minimum)
+	}
+	if !s.ExclusiveMaximum || !s.ExclusiveMinimum {
+		t.Fatal("expected exclusive numeric bounds")
+	}
+	if s.Format != "int32" {
+		t.Fatalf("numeric value_schema must not override inferred format, got %q", s.Format)
+	}
+	if s.MaxLength != 0 || s.Pattern != "" || s.MaxItems != 0 || s.MaxProperties != 0 {
+		t.Fatalf("non-numeric constraints leaked onto numeric schema: maxLength=%d pattern=%q maxItems=%d maxProperties=%d",
+			s.MaxLength, s.Pattern, s.MaxItems, s.MaxProperties)
+	}
+	if len(s.Enum) > 0 {
+		t.Fatalf("string enum values must not be applied to numeric schema, got %v", s.Enum)
+	}
+}
+
+func TestApplyValueSchema_NumericMinimumCannotLowerExistingFloor(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type:    "integer",
+		Format:  "int64",
+		Minimum: proto.Float64(0),
+	}}, &options.JSONSchema{
+		Minimum: proto.Float64(-1),
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_UINT32, nil), "")
+
+	s := got.OpenAPIV3Schema
+	if s.Minimum == nil || *s.Minimum != 0 {
+		t.Fatalf("value_schema minimum must not lower existing floor, got %v", s.Minimum)
+	}
+}
+
+func TestApplyValueSchema_NumericMinimumCanRaiseExistingFloor(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type:    "integer",
+		Format:  "int64",
+		Minimum: proto.Float64(0),
+	}}, &options.JSONSchema{
+		Minimum: proto.Float64(5),
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_UINT32, nil), "")
+
+	s := got.OpenAPIV3Schema
+	if s.Minimum == nil || *s.Minimum != 5 {
+		t.Fatalf("value_schema minimum should raise existing floor, got %v", s.Minimum)
+	}
+}
+
+func TestApplyValueSchema_NumericMinimumCanSetSignedFloor(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type:   "integer",
+		Format: "int32",
+	}}, &options.JSONSchema{
+		Minimum: proto.Float64(-10),
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_INT32, nil), "")
+
+	s := got.OpenAPIV3Schema
+	if s.Minimum == nil || *s.Minimum != -10 {
+		t.Fatalf("value_schema minimum should set missing signed floor, got %v", s.Minimum)
+	}
+}
+
+func TestApplyValueSchema_StringConstraints(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type:   "string",
+		Format: "uuid",
+	}}, &options.JSONSchema{
+		MaxLength:        64,
+		MinLength:        1,
+		Pattern:          "^[a-z]+$",
+		Format:           "email",
+		Example:          "hello",
+		Maximum:          100,
+		Minimum:          proto.Float64(0),
+		ExclusiveMaximum: true,
+		MaxItems:         9,
+		MaxProperties:    7,
+		Enum:             []string{"A", "B"},
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_STRING, nil), "")
+
+	s := got.OpenAPIV3Schema
+	if s.MaxLength != 64 || s.MinLength == nil || *s.MinLength != 1 {
+		t.Fatalf("expected string length constraints, got max=%d min=%v", s.MaxLength, s.MinLength)
+	}
+	if s.Pattern != "^[a-z]+$" || s.Format != "email" {
+		t.Fatalf("expected string pattern/format, got %q/%q", s.Pattern, s.Format)
+	}
+	if !slices.Equal(s.Enum, []string{"A", "B"}) {
+		t.Fatalf("expected string enum override, got %v", s.Enum)
+	}
+	if string(s.Example) != `"hello"` {
+		t.Fatalf("expected string example to be coerced to JSON string, got %s", s.Example)
+	}
+	if _, err := json.Marshal(s); err != nil {
+		t.Fatalf("expected coerced string example to marshal as valid JSON: %v", err)
+	}
+	if s.Maximum != 0 || s.Minimum != nil || s.ExclusiveMaximum || s.MaxItems != 0 || s.MaxProperties != 0 {
+		t.Fatalf("non-string constraints leaked onto string schema: max=%v min=%v exclusiveMax=%v maxItems=%d maxProperties=%d",
+			s.Maximum, s.Minimum, s.ExclusiveMaximum, s.MaxItems, s.MaxProperties)
+	}
+}
+
+func TestApplyValueSchema_ArrayConstraints(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type: "array",
+	}}, &options.JSONSchema{
+		MaxItems:      10,
+		MinItems:      1,
+		UniqueItems:   true,
+		Maximum:       100,
+		MaxLength:     64,
+		Pattern:       "^[a-z]+$",
+		MaxProperties: 7,
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_STRING, nil), "")
+
+	s := got.OpenAPIV3Schema
+	if s.MaxItems != 10 || s.MinItems == nil || *s.MinItems != 1 {
+		t.Fatalf("expected array item constraints, got max=%d min=%v", s.MaxItems, s.MinItems)
+	}
+	if !s.UniqueItems {
+		t.Fatal("expected uniqueItems=true")
+	}
+	if s.Maximum != 0 || s.MaxLength != 0 || s.Pattern != "" || s.MaxProperties != 0 {
+		t.Fatalf("non-array constraints leaked onto array schema: max=%v maxLength=%d pattern=%q maxProperties=%d",
+			s.Maximum, s.MaxLength, s.Pattern, s.MaxProperties)
+	}
+}
+
+func TestApplyValueSchema_ObjectConstraints(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type: "object",
+	}}, &options.JSONSchema{
+		MaxProperties: 8,
+		MinProperties: 1,
+		Maximum:       100,
+		MaxLength:     64,
+		MaxItems:      10,
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, nil), "")
+
+	s := got.OpenAPIV3Schema
+	if s.MaxProperties != 8 || s.MinProperties != 1 {
+		t.Fatalf("expected object property constraints, got max=%d min=%d", s.MaxProperties, s.MinProperties)
+	}
+	if s.Maximum != 0 || s.MaxLength != 0 || s.MaxItems != 0 {
+		t.Fatalf("non-object constraints leaked onto object schema: max=%v maxLength=%d maxItems=%d",
+			s.Maximum, s.MaxLength, s.MaxItems)
+	}
+}
+
+func TestApplyValueSchema_BooleanIgnoresEnum(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type: "boolean",
+	}}, &options.JSONSchema{
+		Enum: []string{"true", "false"},
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_BOOL, nil), "")
+
+	s := got.OpenAPIV3Schema
+	if len(s.Enum) > 0 {
+		t.Fatalf("string enum values must not be applied to boolean schema, got %v", s.Enum)
+	}
+}
+
+func TestApplyValueSchema_RefSchemaWrapsWithAllOf(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{
+		Ref: "#/components/schemas/ValueMsg",
+	}, &options.JSONSchema{
+		Description:   "Map value object.",
+		MaxProperties: 8,
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, nil), "object")
+
+	if got.Ref != "" {
+		t.Fatalf("expected top-level ref to be cleared for allOf wrapper, got %q", got.Ref)
+	}
+	s := got.OpenAPIV3Schema
+	if s == nil {
+		t.Fatal("expected inline wrapper schema")
+	}
+	if s.Type != "object" {
+		t.Fatalf("expected wrapper type=object, got %q", s.Type)
+	}
+	if len(s.AllOf) != 1 || s.AllOf[0].Ref != "#/components/schemas/ValueMsg" {
+		t.Fatalf("expected allOf wrapper around ValueMsg ref, got %#v", s.AllOf)
+	}
+	if s.Description != "Map value object." || s.MaxProperties != 8 {
+		t.Fatalf("expected value_schema overrides on wrapper, got description=%q maxProperties=%d", s.Description, s.MaxProperties)
+	}
+}
+
+func TestApplyValueSchema_EnumRefSchemaWrapsWithAllOf(t *testing.T) {
+	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{
+		Ref: "#/components/schemas/ValueEnum",
+	}, &options.JSONSchema{
+		Description: "Map value enum.",
+		Pattern:     "^(VALUE_A|VALUE_B)$",
+	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_ENUM, nil), "string")
+
+	if got.Ref != "" {
+		t.Fatalf("expected top-level ref to be cleared for allOf wrapper, got %q", got.Ref)
+	}
+	s := got.OpenAPIV3Schema
+	if s == nil {
+		t.Fatal("expected inline wrapper schema")
+	}
+	if s.Type != "string" {
+		t.Fatalf("expected wrapper type=string, got %q", s.Type)
+	}
+	if len(s.AllOf) != 1 || s.AllOf[0].Ref != "#/components/schemas/ValueEnum" {
+		t.Fatalf("expected allOf wrapper around ValueEnum ref, got %#v", s.AllOf)
+	}
+	if s.Description != "Map value enum." || s.Pattern != "^(VALUE_A|VALUE_B)$" {
+		t.Fatalf("expected value_schema overrides on wrapper, got description=%q pattern=%q", s.Description, s.Pattern)
+	}
+}
+
 func TestMinItems_ArrayUnsetEmitsZero(t *testing.T) {
 	field := makeRepeatedField("tags", descriptorpb.FieldDescriptorProto_TYPE_STRING)
 	reg := descriptor.NewRegistry()
@@ -3109,6 +3655,244 @@ func TestMinimum_SignedIntExplicitZeroQueryParameter(t *testing.T) {
 	}
 	if s.Maximum != 10000 {
 		t.Errorf("expected maximum=10000, got %v", s.Maximum)
+	}
+}
+
+func TestMapValueSchema_Int32MapValueConstraints(t *testing.T) {
+	field, reg := makeMapFieldWithExtension(t, "counts", descriptorpb.FieldDescriptorProto_TYPE_INT32, &options.JSONSchema{
+		Description: "Map of names to counts.",
+		ValueSchema: &options.JSONSchema{
+			Description: "Count value.",
+			Minimum:     proto.Float64(0),
+			Maximum:     10000,
+		},
+	})
+
+	for name, s := range mapSchemasFromBothSwitches(t, field, reg) {
+		t.Run(name, func(t *testing.T) {
+			if s.Type != "object" {
+				t.Fatalf("expected map object schema, got type=%q", s.Type)
+			}
+			if s.Description != "Map of names to counts." {
+				t.Errorf("expected outer map description, got %q", s.Description)
+			}
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "integer" || value.Format != "int32" {
+				t.Fatalf("expected int32 map value schema, got type=%q format=%q", value.Type, value.Format)
+			}
+			if value.Description != "Count value." {
+				t.Errorf("expected value schema description, got %q", value.Description)
+			}
+			if value.Minimum == nil || *value.Minimum != 0 {
+				t.Fatalf("expected value minimum=0, got %v", value.Minimum)
+			}
+			if value.Maximum != 10000 {
+				t.Errorf("expected value maximum=10000, got %v", value.Maximum)
+			}
+		})
+	}
+}
+
+func TestMapValueSchema_Uint32MapValueConstraints(t *testing.T) {
+	field, reg := makeMapFieldWithExtension(t, "counts", descriptorpb.FieldDescriptorProto_TYPE_UINT32, &options.JSONSchema{
+		Description: "Map of names to counts.",
+		ValueSchema: &options.JSONSchema{
+			Maximum: 10000,
+		},
+	})
+
+	for name, s := range mapSchemasFromBothSwitches(t, field, reg) {
+		t.Run(name, func(t *testing.T) {
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "integer" || value.Format != "int64" {
+				t.Fatalf("expected uint32 map value schema, got type=%q format=%q", value.Type, value.Format)
+			}
+			if value.Minimum == nil || *value.Minimum != 0 {
+				t.Fatalf("expected unsigned map value minimum=0, got %v", value.Minimum)
+			}
+			if value.Maximum != 10000 {
+				t.Errorf("expected value maximum=10000, got %v", value.Maximum)
+			}
+		})
+	}
+}
+
+func TestMapValueSchema_Uint32MapValueNegativeMinimumClamped(t *testing.T) {
+	field, reg := makeMapFieldWithExtension(t, "counts", descriptorpb.FieldDescriptorProto_TYPE_UINT32, &options.JSONSchema{
+		Description: "Map of names to counts.",
+		ValueSchema: &options.JSONSchema{
+			Minimum: proto.Float64(-1),
+			Maximum: 10000,
+		},
+	})
+
+	for name, s := range mapSchemasFromBothSwitches(t, field, reg) {
+		t.Run(name, func(t *testing.T) {
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "integer" || value.Format != "int64" {
+				t.Fatalf("expected uint32 map value schema, got type=%q format=%q", value.Type, value.Format)
+			}
+			if value.Minimum == nil || *value.Minimum != 0 {
+				t.Fatalf("negative minimum must not lower unsigned map value floor, got %v", value.Minimum)
+			}
+			if value.Maximum != 10000 {
+				t.Errorf("expected value maximum=10000, got %v", value.Maximum)
+			}
+		})
+	}
+}
+
+func TestMapValueSchema_UInt32ValueMapValueNegativeMinimumClamped(t *testing.T) {
+	field, reg := makeWellKnownMapFieldWithExtension(t, "counts", ".google.protobuf.UInt32Value", protodesc.ToFileDescriptorProto(wrapperspb.File_google_protobuf_wrappers_proto), &options.JSONSchema{
+		Description: "Map of names to counts.",
+		ValueSchema: &options.JSONSchema{
+			Minimum: proto.Float64(-1),
+			Maximum: 10000,
+		},
+	})
+
+	for name, s := range mapSchemasFromBothSwitches(t, field, reg) {
+		t.Run(name, func(t *testing.T) {
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "integer" || value.Format != "int64" {
+				t.Fatalf("expected UInt32Value map value schema, got type=%q format=%q", value.Type, value.Format)
+			}
+			if value.Minimum == nil || *value.Minimum != 0 {
+				t.Fatalf("negative minimum must not lower UInt32Value map value floor, got %v", value.Minimum)
+			}
+			if value.Maximum != 10000 {
+				t.Errorf("expected value maximum=10000, got %v", value.Maximum)
+			}
+		})
+	}
+}
+
+func TestMapValueSchema_MessageMapValueConstraints(t *testing.T) {
+	field, reg, resolvedNames, schemaMap := makeMessageMapFieldWithExtension(t, "values", &options.JSONSchema{
+		Description: "Map of names to values.",
+		ValueSchema: &options.JSONSchema{
+			Description:   "Value object.",
+			MaxProperties: 8,
+		},
+	})
+
+	withRefs := buildPropertySchemaWithReferencesFromField(field, reg, resolvedNames)
+	plain := buildPropertySchemaFromField(field, schemaMap, resolvedNames, reg)
+
+	for name, s := range map[string]*OpenAPIV3Schema{
+		"withRefs": withRefs.OpenAPIV3Schema,
+		"plain":    plain.OpenAPIV3Schema,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if s.Type != "object" {
+				t.Fatalf("expected map object schema, got type=%q", s.Type)
+			}
+			if s.Description != "Map of names to values." {
+				t.Errorf("expected outer map description, got %q", s.Description)
+			}
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "object" {
+				t.Fatalf("expected object map value schema, got type=%q", value.Type)
+			}
+			if value.Description != "Value object." || value.MaxProperties != 8 {
+				t.Fatalf("expected value_schema overrides, got description=%q maxProperties=%d", value.Description, value.MaxProperties)
+			}
+			if name == "withRefs" {
+				if len(value.AllOf) != 1 || value.AllOf[0].Ref != "#/components/schemas/ValueMsg" {
+					t.Fatalf("expected referenced map value to be wrapped with allOf, got %#v", value.AllOf)
+				}
+			}
+			if _, err := json.Marshal(s); err != nil {
+				t.Fatalf("expected map schema with message value constraints to marshal as valid JSON: %v", err)
+			}
+		})
+	}
+}
+
+func TestMapValueSchema_StringMapValueExampleCoerced(t *testing.T) {
+	field, reg := makeMapFieldWithExtension(t, "labels", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Description: "Map of label names to label values.",
+		ValueSchema: &options.JSONSchema{
+			Example: "hello",
+		},
+	})
+
+	for name, s := range mapSchemasFromBothSwitches(t, field, reg) {
+		t.Run(name, func(t *testing.T) {
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "string" {
+				t.Fatalf("expected string map value schema, got type=%q", value.Type)
+			}
+			if string(value.Example) != `"hello"` {
+				t.Fatalf("expected string map value example to be coerced to JSON string, got %s", value.Example)
+			}
+			if _, err := json.Marshal(s); err != nil {
+				t.Fatalf("expected map schema with string value example to marshal as valid JSON: %v", err)
+			}
+		})
+	}
+}
+
+func TestMapValueSchema_StringMapValueFormatOverride(t *testing.T) {
+	field, reg := makeMapFieldWithExtension(t, "labels", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		Description: "Map of label names to label values.",
+		ValueSchema: &options.JSONSchema{
+			Format: "uuid",
+		},
+	})
+
+	for name, s := range mapSchemasFromBothSwitches(t, field, reg) {
+		t.Run(name, func(t *testing.T) {
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "string" {
+				t.Fatalf("expected string map value schema, got type=%q", value.Type)
+			}
+			if value.Format != "uuid" {
+				t.Fatalf("expected plain string map value format override, got %q", value.Format)
+			}
+		})
+	}
+}
+
+func TestMapValueSchema_BytesMapValuePreservesFormat(t *testing.T) {
+	field, reg := makeMapFieldWithExtension(t, "blobs", descriptorpb.FieldDescriptorProto_TYPE_BYTES, &options.JSONSchema{
+		Description: "Map of names to blobs.",
+		ValueSchema: &options.JSONSchema{
+			Format: "uuid",
+		},
+	})
+
+	for name, s := range mapSchemasFromBothSwitches(t, field, reg) {
+		t.Run(name, func(t *testing.T) {
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "string" {
+				t.Fatalf("expected bytes map value schema to render as string, got type=%q", value.Type)
+			}
+			if value.Format != "byte" {
+				t.Fatalf("bytes map value must preserve format=byte, got %q", value.Format)
+			}
+		})
+	}
+}
+
+func TestMapValueSchema_TimestampMapValuePreservesFormat(t *testing.T) {
+	field, reg := makeWellKnownMapFieldWithExtension(t, "timestamps", ".google.protobuf.Timestamp", protodesc.ToFileDescriptorProto(timestamppb.File_google_protobuf_timestamp_proto), &options.JSONSchema{
+		Description: "Map of names to timestamps.",
+		ValueSchema: &options.JSONSchema{
+			Format: "email",
+		},
+	})
+
+	for name, s := range mapSchemasFromBothSwitches(t, field, reg) {
+		t.Run(name, func(t *testing.T) {
+			value := mustAdditionalPropertiesSchema(t, s)
+			if value.Type != "string" {
+				t.Fatalf("expected timestamp map value schema to render as string, got type=%q", value.Type)
+			}
+			if value.Format != "date-time" {
+				t.Fatalf("timestamp map value must preserve format=date-time, got %q", value.Format)
+			}
+		})
 	}
 }
 
