@@ -490,7 +490,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 						for k, v := range operation.Extensions {
 							extensions[k] = v
 						}
-						responses = extractOpenAPIV3ResponsesFromProtoExtension(operation)
+						responses = extractOpenAPIV3ResponsesFromProtoExtension(operation, resolvedNames)
 						if successResp, ok := operation.GetResponses()[successStatusCode]; ok && successResp != nil {
 							successResponseExamples = successResp.GetExamples()
 						}
@@ -678,24 +678,17 @@ func applyPathParamRenames(path string, renames map[string]string) string {
 	return path
 }
 
-func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) OpenAPIV3Responses {
+func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation, resolvedNames map[string]string) OpenAPIV3Responses {
 	responses := OpenAPIV3Responses{}
 	for statusCode, response := range operation.Responses {
 		if response != nil {
 			if statusCode != successStatusCode {
-				var ref string
 				var content map[string]OpenAPIV3MediaType
-				if response.Schema != nil && response.Schema.JsonSchema != nil && response.Schema.JsonSchema.Ref != "" {
-					ref = "#/components/schemas/" + response.Schema.JsonSchema.Ref
+				if schemaRef := responseSchemaRef(response.GetSchema(), resolvedNames); schemaRef != nil {
 					content = make(map[string]OpenAPIV3MediaType)
 					content["application/json"] = OpenAPIV3MediaType{
-						Schema: &OpenAPIV3SchemaRef{
-							Ref: ref,
-						},
+						Schema: schemaRef,
 					}
-				} else {
-					content = make(map[string]OpenAPIV3MediaType)
-					content["application/json"] = OpenAPIV3MediaType{}
 				}
 				headers := make(map[string]OpenAPIV3HeaderRef)
 				for headerName, header := range response.Headers {
@@ -730,6 +723,23 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 		}
 	}
 	return responses
+}
+
+func responseSchemaRef(schema *options.Schema, resolvedNames map[string]string) *OpenAPIV3SchemaRef {
+	if schema == nil || schema.JsonSchema == nil {
+		return nil
+	}
+	ref := schema.JsonSchema.Ref
+	if ref == "" {
+		return nil
+	}
+	if strings.HasPrefix(ref, "#/") || strings.Contains(ref, "://") {
+		return &OpenAPIV3SchemaRef{Ref: ref}
+	}
+	if resolvedName, ok := resolvedNames[ref]; ok {
+		return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedName}
+	}
+	return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + ref}
 }
 
 // mediaTypeExampleValue converts a per-mime-type example string from the

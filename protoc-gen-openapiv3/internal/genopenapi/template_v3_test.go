@@ -2135,7 +2135,7 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_EmitsExamplesForNonSuccess(
 			},
 		},
 	}
-	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, nil)
 
 	resp, ok := got["404"]
 	if !ok || resp.OpenAPIV3Response == nil {
@@ -2163,18 +2163,14 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_NoExamplesLeavesContentEmpt
 			"500": {Description: "Internal Server Error"},
 		},
 	}
-	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, nil)
 
 	resp, ok := got["500"]
 	if !ok || resp.OpenAPIV3Response == nil {
 		t.Fatalf("expected 500 response, got keys %v", keysOfResponses(got))
 	}
-	mt, ok := resp.Content["application/json"]
-	if !ok {
-		t.Fatal("expected default application/json content entry to be created")
-	}
-	if mt.Example != nil {
-		t.Errorf("expected no Example when annotation has none, got %v", mt.Example)
+	if len(resp.Content) != 0 {
+		t.Fatalf("expected no content for a description-only response, got keys %v", keysOfContent(resp.Content))
 	}
 }
 
@@ -2194,7 +2190,7 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_SuccessStatusStillSkipped(t
 			"404": {Description: "Not Found"},
 		},
 	}
-	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, nil)
 	if _, ok := got["200"]; ok {
 		t.Error("200 response must not be emitted by extractOpenAPIV3ResponsesFromProtoExtension (success path is handled separately)")
 	}
@@ -2215,7 +2211,7 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_MultipleNonSuccessResponses
 			"500": {Description: "Internal Server Error"}, // no examples
 		},
 	}
-	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, nil)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 responses, got %d (keys=%v)", len(got), keysOfResponses(got))
 	}
@@ -2303,7 +2299,7 @@ func TestExtractResponses_CustomResponseCarriesRefSchema(t *testing.T) {
 			"201": responseWithRefSchema("Created", "CreateFooResponse"),
 		},
 	}
-	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, nil)
 
 	resp, ok := responses["201"]
 	if !ok {
@@ -2327,13 +2323,36 @@ func TestExtractResponses_CustomResponseCarriesRefSchema(t *testing.T) {
 	}
 }
 
+func TestExtractResponses_CustomResponseResolvesProtoRefSchema(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"400": responseWithRefSchema("Bad Request", ".google.rpc.Status"),
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, map[string]string{
+		".google.rpc.Status": "Status",
+	})
+
+	resp, ok := responses["400"]
+	if !ok {
+		t.Fatal("expected a 400 response")
+	}
+	media, ok := resp.Content["application/json"]
+	if !ok || media.Schema == nil {
+		t.Fatal("expected application/json schema on the 400 response")
+	}
+	if want := "#/components/schemas/Status"; media.Schema.Ref != want {
+		t.Errorf("expected schema $ref %q, got %q", want, media.Schema.Ref)
+	}
+}
+
 func TestExtractResponses_CustomResponseDescriptionOnly(t *testing.T) {
 	op := &options.Operation{
 		Responses: map[string]*options.Response{
 			"404": {Description: "Not Found"},
 		},
 	}
-	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, nil)
 
 	resp, ok := responses["404"]
 	if !ok {
@@ -2356,7 +2375,7 @@ func TestExtractResponses_MultipleCustomResponsesEachCarrySchema(t *testing.T) {
 			"409": {Description: "Conflict"},
 		},
 	}
-	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, nil)
 
 	for code, wantRef := range map[string]string{
 		"201": "#/components/schemas/CreateFooResponse",
@@ -2385,7 +2404,7 @@ func TestExtractResponses_SuccessStatusReserved(t *testing.T) {
 			"200": responseWithRefSchema("OK", "GetFooResponse"),
 		},
 	}
-	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, nil)
 	if _, ok := responses["200"]; ok {
 		t.Error("expected the 200 response to be reserved for the main response body and skipped")
 	}
