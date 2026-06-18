@@ -334,6 +334,149 @@ func unsignedMinimum(v *float64) *float64 {
 	return float64Ptr(*v)
 }
 
+// applyValueSchema merges map field value_schema overrides into the generated
+// schema for additionalProperties. The protobuf map value type still determines
+// the base OpenAPI type and structural shape; value_schema supplies compatible
+// constraints and metadata.
+func applyValueSchemaForMapValue(additionalPropertiesSchema *OpenAPIV3SchemaRef, valueSchema *options.JSONSchema, valueField *descriptor.Field, schemaType string) *OpenAPIV3SchemaRef {
+	if valueSchema == nil {
+		return additionalPropertiesSchema
+	}
+
+	schema, ref := valueSchemaMergeTarget(additionalPropertiesSchema, schemaType)
+	if schema.Type != "" {
+		schemaType = schema.Type
+	}
+
+	if valueSchema.Title != "" {
+		schema.Title = valueSchema.Title
+	}
+	if valueSchema.Description != "" {
+		schema.Description = valueSchema.Description
+	}
+
+	switch schemaType {
+	case "integer", "number":
+		if valueSchema.MultipleOf != 0 {
+			schema.MultipleOf = valueSchema.MultipleOf
+		}
+		if valueSchema.Maximum != 0 {
+			schema.Maximum = valueSchema.Maximum
+		}
+		if valueSchema.Minimum != nil {
+			if schema.Minimum == nil || *valueSchema.Minimum >= *schema.Minimum {
+				schema.Minimum = valueSchema.Minimum
+			}
+		}
+		if valueSchema.ExclusiveMaximum {
+			schema.ExclusiveMaximum = true
+		}
+		if valueSchema.ExclusiveMinimum {
+			schema.ExclusiveMinimum = true
+		}
+	case "string":
+		if valueSchema.MaxLength != 0 {
+			schema.MaxLength = valueSchema.MaxLength
+		}
+		if valueSchema.MinLength != 0 {
+			schema.MinLength = uint64Ptr(valueSchema.MinLength)
+		}
+		if valueSchema.Pattern != "" {
+			schema.Pattern = valueSchema.Pattern
+		}
+		if mapValueSchemaAllowsFormatOverride(valueField) && valueSchema.Format != "" {
+			schema.Format = valueSchema.Format
+		}
+		if len(valueSchema.Enum) > 0 {
+			schema.Enum = slices.Clone(valueSchema.Enum)
+		}
+	case "array":
+		if valueSchema.MaxItems != 0 {
+			schema.MaxItems = valueSchema.MaxItems
+		}
+		if valueSchema.MinItems != 0 {
+			schema.MinItems = uint64Ptr(valueSchema.MinItems)
+		}
+		if valueSchema.UniqueItems {
+			schema.UniqueItems = true
+		}
+	case "object":
+		if valueSchema.MaxProperties != 0 {
+			schema.MaxProperties = valueSchema.MaxProperties
+		}
+		if valueSchema.MinProperties != 0 {
+			schema.MinProperties = valueSchema.MinProperties
+		}
+	}
+	if valueSchema.ReadOnly {
+		schema.ReadOnly = true
+	}
+	if valueSchema.Example != "" {
+		constrainedExample, err := validateAndCoerceJsonExample(valueSchema.Example, schemaType)
+		if err == nil && constrainedExample != "" && json.Valid([]byte(constrainedExample)) {
+			schema.Example = RawExample(constrainedExample)
+		}
+	}
+
+	return &OpenAPIV3SchemaRef{
+		Ref:             ref,
+		OpenAPIV3Schema: &schema,
+	}
+}
+
+// valueSchemaMergeTarget returns a mutable schema for additionalProperties.
+// Ref-only schemas are wrapped with allOf so value_schema fields can be emitted
+// alongside the reference.
+func valueSchemaMergeTarget(additionalPropertiesSchema *OpenAPIV3SchemaRef, schemaType string) (OpenAPIV3Schema, string) {
+	if additionalPropertiesSchema.OpenAPIV3Schema != nil {
+		return *additionalPropertiesSchema.OpenAPIV3Schema, additionalPropertiesSchema.Ref
+	}
+	return OpenAPIV3Schema{
+		Type:  schemaType,
+		AllOf: []*OpenAPIV3SchemaRef{{Ref: additionalPropertiesSchema.Ref}},
+	}, ""
+}
+
+func mapValueSchemaAllowsFormatOverride(field *descriptor.Field) bool {
+	return *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING
+}
+
+func mapValueSchemaType(field *descriptor.Field) string {
+	switch *field.Type {
+	case descriptorpb.FieldDescriptorProto_TYPE_DOUBLE,
+		descriptorpb.FieldDescriptorProto_TYPE_FLOAT:
+		return "number"
+	case descriptorpb.FieldDescriptorProto_TYPE_INT32,
+		descriptorpb.FieldDescriptorProto_TYPE_SFIXED32,
+		descriptorpb.FieldDescriptorProto_TYPE_SINT32,
+		descriptorpb.FieldDescriptorProto_TYPE_UINT32,
+		descriptorpb.FieldDescriptorProto_TYPE_FIXED32:
+		return "integer"
+	case descriptorpb.FieldDescriptorProto_TYPE_INT64,
+		descriptorpb.FieldDescriptorProto_TYPE_SFIXED64,
+		descriptorpb.FieldDescriptorProto_TYPE_SINT64,
+		descriptorpb.FieldDescriptorProto_TYPE_UINT64,
+		descriptorpb.FieldDescriptorProto_TYPE_FIXED64:
+		return "string"
+	case descriptorpb.FieldDescriptorProto_TYPE_BOOL:
+		return "boolean"
+	case descriptorpb.FieldDescriptorProto_TYPE_STRING,
+		descriptorpb.FieldDescriptorProto_TYPE_BYTES,
+		descriptorpb.FieldDescriptorProto_TYPE_ENUM:
+		return "string"
+	case descriptorpb.FieldDescriptorProto_TYPE_MESSAGE,
+		descriptorpb.FieldDescriptorProto_TYPE_GROUP:
+		if field.TypeName != nil {
+			if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
+				return schema.Type
+			}
+		}
+		return "object"
+	default:
+		return ""
+	}
+}
+
 func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 	resolvedNames := resolveNames(param)
 	enumSchemas := buildEnumSchemas(param, resolvedNames)
@@ -1970,6 +2113,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	var jsonExample string
 	var rawExample RawExample = nil
 	var extensions OpenAPIV3Extensions
+	var valueSchema *options.JSONSchema
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
 	}
@@ -1995,6 +2139,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			description = fieldExtension.Description
 			readOnly = fieldExtension.ReadOnly
 			jsonExample = fieldExtension.Example
+			valueSchema = fieldExtension.ValueSchema
 		}
 	}
 	isArrayOrMapElement := false
@@ -2309,6 +2454,9 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 				}
 				additionalProperties, mapExample := buildPropertySchemaWithReferencesFromFieldType(valueField, registry, resolvedNames)
+				if additionalProperties != nil {
+					additionalProperties = applyValueSchemaForMapValue(additionalProperties, valueSchema, valueField, mapValueSchemaType(valueField))
+				}
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
 					AdditionalProperties: additionalProperties,
@@ -2464,6 +2612,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 	var fieldExample RawExample
 	var arrayExample RawExample
 	var rawExample RawExample
+	var valueSchema *options.JSONSchema
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
 	}
@@ -2486,6 +2635,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			description = fieldExtension.Description
 			readOnly = fieldExtension.ReadOnly
 			jsonExample = fieldExtension.Example
+			valueSchema = fieldExtension.ValueSchema
 		}
 	}
 	isArrayOrMapElement := false
@@ -2801,6 +2951,9 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 					return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "object"}}, arrayExample
 				}
 				additionalProperties, mapExample := buildPropertySchemaFromFieldType(valueField, schemaMap, resolvedNames, registry)
+				if additionalProperties != nil {
+					additionalProperties = applyValueSchemaForMapValue(additionalProperties, valueSchema, valueField, mapValueSchemaType(valueField))
+				}
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
 					AdditionalProperties: additionalProperties,
