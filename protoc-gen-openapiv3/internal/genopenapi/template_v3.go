@@ -579,6 +579,19 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 	paths := OpenAPIV3Paths{}
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
 
+	// Reference for the default error body schema (google.rpc.Status), which is
+	// always registered in components by buildMessageSchemasWithReferences. It is
+	// attached to description-only error responses so they carry a documented
+	// JSON body — satisfying both ibm-content-contains-schema (content must have
+	// a schema) and ibm-request-and-response-content (non-204 responses should
+	// have content). Empty when the Status message is unavailable.
+	var errorSchemaRef string
+	if statusMsg, err := param.reg.LookupMsg("google.rpc", "Status"); err == nil && statusMsg != nil {
+		if name := resolvedNames[statusMsg.FQMN()]; name != "" {
+			errorSchemaRef = "#/components/schemas/" + name
+		}
+	}
+
 	// Track registered path + method combinations to detect duplicates
 	registeredPaths := make(map[pathMethodKey]pathMethodSource)
 
@@ -634,7 +647,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 						for k, v := range operation.Extensions {
 							extensions[k] = v
 						}
-						responses = extractOpenAPIV3ResponsesFromProtoExtension(operation)
+						responses = extractOpenAPIV3ResponsesFromProtoExtension(operation, errorSchemaRef)
 						if successResp, ok := operation.GetResponses()[successStatusCode]; ok && successResp != nil {
 							successResponseExamples = successResp.GetExamples()
 						}
@@ -862,16 +875,29 @@ func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
 	return s
 }
 
-func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) OpenAPIV3Responses {
+// isErrorStatusCode reports whether an OpenAPI response status code key denotes
+// an error (4xx/5xx). Non-numeric keys (e.g. "default", "4XX") are treated as
+// non-errors so they keep their explicit shape.
+func isErrorStatusCode(statusCode string) bool {
+	code, err := strconv.Atoi(statusCode)
+	return err == nil && code >= 400
+}
+
+func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation, errorSchemaRef string) OpenAPIV3Responses {
 	responses := OpenAPIV3Responses{}
 	for statusCode, response := range operation.Responses {
 		if response != nil {
 			if statusCode != successStatusCode {
 				var content map[string]OpenAPIV3MediaType
-				// Emit content only when the annotation defines a schema ($ref or
-				// inline). A description-only response has no body; a fabricated
-				// empty media type trips ibm-content-contains-schema. Examples, if
-				// any, are added back by applyResponseExamples below.
+				// Pick the response body schema:
+				//   - an explicit annotation schema ($ref or inline) wins;
+				//   - otherwise a description-only error response (4xx/5xx) falls
+				//     back to the default error schema (google.rpc.Status) so it
+				//     still documents a JSON body. Without this, an empty media
+				//     type trips ibm-content-contains-schema while no content at
+				//     all trips ibm-request-and-response-content.
+				// Non-error description-only responses (e.g. 201) and 204 stay
+				// bodyless. Examples, if any, are added by applyResponseExamples.
 				if js := response.Schema.GetJsonSchema(); js != nil {
 					var schemaRef *OpenAPIV3SchemaRef
 					if js.Ref != "" {
@@ -880,6 +906,8 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation) O
 						schemaRef = &OpenAPIV3SchemaRef{OpenAPIV3Schema: inlineResponseSchema(js)}
 					}
 					content = map[string]OpenAPIV3MediaType{"application/json": {Schema: schemaRef}}
+				} else if errorSchemaRef != "" && isErrorStatusCode(statusCode) {
+					content = map[string]OpenAPIV3MediaType{"application/json": {Schema: &OpenAPIV3SchemaRef{Ref: errorSchemaRef}}}
 				}
 				headers := make(map[string]OpenAPIV3HeaderRef)
 				for headerName, header := range response.Headers {
