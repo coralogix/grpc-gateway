@@ -85,6 +85,11 @@ type Registry struct {
 	// visibilityRestrictionSelectors is a map of selectors for `google.api.VisibilityRule`s that will be included in the OpenAPI output.
 	visibilityRestrictionSelectors map[string]bool
 
+	// defaultErrorResponseSchema is the fully-qualified name of the message used
+	// as the body schema for description-only error responses (4xx/5xx). When
+	// empty, the generator falls back to google.rpc.Status.
+	defaultErrorResponseSchema string
+
 	// useGoTemplate determines whether you want to use GO templates
 	// in your protofile comments
 	useGoTemplate bool
@@ -720,6 +725,24 @@ func (r *Registry) SetVisibilityRestrictionSelectors(selectors []string) {
 // GetVisibilityRestrictionSelectors retrieves the visibility restriction selectors.
 func (r *Registry) GetVisibilityRestrictionSelectors() map[string]bool {
 	return r.visibilityRestrictionSelectors
+}
+
+// normalizeFQMN trims a single leading dot so option values like
+// "com.example.Foo" and ".com.example.Foo" compare equal to Message.FQMN().
+func normalizeFQMN(name string) string {
+	return strings.TrimPrefix(strings.TrimSpace(name), ".")
+}
+
+// SetDefaultErrorResponseSchema sets the fully-qualified message name used as
+// the body schema for description-only error responses.
+func (r *Registry) SetDefaultErrorResponseSchema(name string) {
+	r.defaultErrorResponseSchema = normalizeFQMN(name)
+}
+
+// GetDefaultErrorResponseSchema retrieves the configured default error response
+// schema message name (without a leading dot), or "" if unset.
+func (r *Registry) GetDefaultErrorResponseSchema() string {
+	return r.defaultErrorResponseSchema
 }
 
 // SetDisableDefaultErrors sets disableDefaultErrors

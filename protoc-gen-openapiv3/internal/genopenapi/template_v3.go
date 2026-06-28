@@ -579,16 +579,28 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 	paths := OpenAPIV3Paths{}
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
 
-	// Reference for the default error body schema (google.rpc.Status), which is
-	// always registered in components by buildMessageSchemasWithReferences. It is
-	// attached to description-only error responses so they carry a documented
-	// JSON body — satisfying both ibm-content-contains-schema (content must have
-	// a schema) and ibm-request-and-response-content (non-204 responses should
-	// have content). Empty when the Status message is unavailable.
+	// Reference for the default error body schema attached to description-only
+	// error responses so they carry a documented JSON body — satisfying both
+	// ibm-content-contains-schema (content must have a schema) and
+	// ibm-request-and-response-content (non-204 responses should have content).
+	// Prefer the configured default_error_response_schema message; otherwise
+	// fall back to google.rpc.Status. Empty when neither is available.
 	var errorSchemaRef string
-	if statusMsg, err := param.reg.LookupMsg("google.rpc", "Status"); err == nil && statusMsg != nil {
-		if name := resolvedNames[statusMsg.FQMN()]; name != "" {
-			errorSchemaRef = "#/components/schemas/" + name
+	if configured := param.reg.GetDefaultErrorResponseSchema(); configured != "" {
+		for _, msg := range param.Messages {
+			if strings.TrimPrefix(msg.FQMN(), ".") == configured {
+				if name := resolvedNames[msg.FQMN()]; name != "" {
+					errorSchemaRef = "#/components/schemas/" + name
+				}
+				break
+			}
+		}
+	}
+	if errorSchemaRef == "" {
+		if statusMsg, err := param.reg.LookupMsg("google.rpc", "Status"); err == nil && statusMsg != nil {
+			if name := resolvedNames[statusMsg.FQMN()]; name != "" {
+				errorSchemaRef = "#/components/schemas/" + name
+			}
 		}
 	}
 
