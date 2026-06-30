@@ -2446,6 +2446,45 @@ func TestExtractResponses_InlineSchemaIsRendered(t *testing.T) {
 	}
 }
 
+// TestExtractResponses_InlineSchemaPreservesConstraints guards that array/object
+// validation constraints on an inline response schema are not dropped.
+func TestExtractResponses_InlineSchemaPreservesConstraints(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"400": {
+				Description: "Bad Request",
+				Schema: &options.Schema{
+					JsonSchema: &options.JSONSchema{
+						Type:        []options.JSONSchema_JSONSchemaSimpleTypes{options.JSONSchema_ARRAY},
+						MinItems:    1,
+						MaxItems:    10,
+						UniqueItems: true,
+						Default:     "[]",
+					},
+				},
+			},
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
+
+	s := responses["400"].Content["application/json"].Schema.OpenAPIV3Schema
+	if s == nil {
+		t.Fatalf("expected an inline schema, got %#v", responses["400"].Content)
+	}
+	if s.MinItems == nil || *s.MinItems != 1 {
+		t.Errorf("expected minItems 1, got %v", s.MinItems)
+	}
+	if s.MaxItems != 10 {
+		t.Errorf("expected maxItems 10, got %d", s.MaxItems)
+	}
+	if !s.UniqueItems {
+		t.Error("expected uniqueItems true")
+	}
+	if s.Default == nil {
+		t.Error("expected default to be preserved")
+	}
+}
+
 func TestExtractResponses_MultipleCustomResponsesEachCarrySchema(t *testing.T) {
 	op := &options.Operation{
 		Responses: map[string]*options.Response{

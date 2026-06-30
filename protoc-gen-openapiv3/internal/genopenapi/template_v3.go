@@ -864,13 +864,25 @@ func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
 		ExclusiveMinimum: js.ExclusiveMinimum,
 		MultipleOf:       js.MultipleOf,
 		MaxLength:        js.MaxLength,
+		MaxItems:         js.MaxItems,
+		UniqueItems:      js.UniqueItems,
+		MaxProperties:    js.MaxProperties,
+		MinProperties:    js.MinProperties,
 		ReadOnly:         js.ReadOnly,
 	}
 	if len(js.Type) > 0 {
 		s.Type = jsonSchemaSimpleTypeToString[js.Type[0]]
 	}
+	// MinLength/MinItems serialize as pointers so a deliberate 0 is kept; the
+	// proto scalar can't distinguish unset from 0, so emit only when non-zero.
 	if js.MinLength != 0 {
 		s.MinLength = uint64Ptr(js.MinLength)
+	}
+	if js.MinItems != 0 {
+		s.MinItems = uint64Ptr(js.MinItems)
+	}
+	if js.Default != "" {
+		s.Default = RawExample(js.Default)
 	}
 	if js.Example != "" {
 		s.Example = RawExample(js.Example)
