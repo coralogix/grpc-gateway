@@ -584,10 +584,15 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 	// JSON body — satisfying both ibm-content-contains-schema (content must have
 	// a schema) and ibm-request-and-response-content (non-204 responses should
 	// have content). Skipped when disable_default_errors is set, so a service
-	// that opted out keeps those responses bodyless.
+	// that opted out keeps those responses bodyless; also skipped (with a
+	// warning) if a proto type already claims the "Error" component name.
 	var errorSchemaRef string
 	if !param.reg.GetDisableDefaultErrors() {
-		errorSchemaRef = "#/components/schemas/" + defaultErrorSchemaName
+		if errorComponentReserved(resolvedNames) {
+			log.Printf("Warning: a proto type already uses the %q schema name; skipping the built-in error schema for description-only error responses", defaultErrorSchemaName)
+		} else {
+			errorSchemaRef = "#/components/schemas/" + defaultErrorSchemaName
+		}
 	}
 
 	// Track registered path + method combinations to detect duplicates
@@ -877,6 +882,19 @@ func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
 // body schema referenced by description-only error responses.
 const defaultErrorSchemaName = "Error"
 
+// errorComponentReserved reports whether a proto-derived type already resolved
+// to the built-in error schema's component name. When true, the built-in must
+// not be emitted or referenced, so a real type with that name is never
+// clobbered and error responses never point at an unrelated model.
+func errorComponentReserved(resolvedNames map[string]string) bool {
+	for _, name := range resolvedNames {
+		if name == defaultErrorSchemaName {
+			return true
+		}
+	}
+	return false
+}
+
 // defaultErrorSchema is the built-in error body schema ({ code, message })
 // attached to description-only 4xx/5xx responses. It is self-contained and
 // fully annotated so it documents a JSON contract and passes the IBM
@@ -908,8 +926,15 @@ func defaultErrorSchema() *OpenAPIV3Schema {
 // an error (4xx/5xx). Non-numeric keys (e.g. "default", "4XX") are treated as
 // non-errors so they keep their explicit shape.
 func isErrorStatusCode(statusCode string) bool {
-	code, err := strconv.Atoi(statusCode)
-	return err == nil && code >= 400
+	if code, err := strconv.Atoi(statusCode); err == nil {
+		return code >= 400
+	}
+	// OpenAPI also allows class-level range keys like "4XX"/"5XX".
+	switch strings.ToUpper(statusCode) {
+	case "4XX", "5XX":
+		return true
+	}
+	return false
 }
 
 func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation, errorSchemaRef string) OpenAPIV3Responses {
@@ -1585,12 +1610,11 @@ func buildMessageSchemasWithReferences(param param, resolvedNames map[string]str
 
 	// Register the built-in default error schema referenced by description-only
 	// error responses (unless default errors are disabled). It is self-contained,
-	// so there are no extra dependencies to register. Skip if a proto message
-	// already resolved to the same name, so a real type is never clobbered.
-	if !param.reg.GetDisableDefaultErrors() {
-		if _, exists := schemas[defaultErrorSchemaName]; !exists {
-			schemas[defaultErrorSchemaName] = &OpenAPIV3SchemaRef{OpenAPIV3Schema: defaultErrorSchema()}
-		}
+	// so there are no extra dependencies to register. Skip if a proto type
+	// already resolved to the same name — buildOpenAPIV3Paths applies the same
+	// guard, so those responses stay bodyless rather than pointing at it.
+	if !param.reg.GetDisableDefaultErrors() && !errorComponentReserved(resolvedNames) {
+		schemas[defaultErrorSchemaName] = &OpenAPIV3SchemaRef{OpenAPIV3Schema: defaultErrorSchema()}
 	}
 
 	return schemas
