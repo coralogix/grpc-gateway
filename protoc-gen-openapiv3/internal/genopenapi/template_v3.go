@@ -527,11 +527,6 @@ func resolveNames(param param) map[string]string {
 	if err == nil && statusCodeType != nil {
 		typeNamesSet[statusCodeType.FQEN()] = struct{}{}
 	}
-	// The configured default error response schema may be an imported type that
-	// is not in param.Messages; include it so it gets a resolved component name.
-	if errMsg := lookupDefaultErrorResponseMsg(param.reg); errMsg != nil {
-		typeNamesSet[errMsg.FQMN()] = struct{}{}
-	}
 	typeNames := []string{}
 	for typeName := range typeNamesSet {
 		typeNames = append(typeNames, typeName)
@@ -584,27 +579,15 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 	paths := OpenAPIV3Paths{}
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
 
-	// Reference for the default error body schema attached to description-only
-	// error responses so they carry a documented JSON body — satisfying both
-	// ibm-content-contains-schema (content must have a schema) and
-	// ibm-request-and-response-content (non-204 responses should have content).
-	// Prefer the configured default_error_response_schema message. Otherwise fall
-	// back to google.rpc.Status — but only when default errors are not disabled:
-	// a service that set disable_default_errors does not want the default gRPC
-	// Status body re-attached. An explicitly configured schema is always honored.
-	// Empty when neither applies (description-only errors then stay bodyless).
+	// Reference for the built-in default error body schema (defaultErrorSchema),
+	// attached to description-only error responses so they carry a documented
+	// JSON body — satisfying both ibm-content-contains-schema (content must have
+	// a schema) and ibm-request-and-response-content (non-204 responses should
+	// have content). Skipped when disable_default_errors is set, so a service
+	// that opted out keeps those responses bodyless.
 	var errorSchemaRef string
-	if errMsg := lookupDefaultErrorResponseMsg(param.reg); errMsg != nil {
-		if name := resolvedNames[errMsg.FQMN()]; name != "" {
-			errorSchemaRef = "#/components/schemas/" + name
-		}
-	}
-	if errorSchemaRef == "" && !param.reg.GetDisableDefaultErrors() {
-		if statusMsg, err := param.reg.LookupMsg("google.rpc", "Status"); err == nil && statusMsg != nil {
-			if name := resolvedNames[statusMsg.FQMN()]; name != "" {
-				errorSchemaRef = "#/components/schemas/" + name
-			}
-		}
+	if !param.reg.GetDisableDefaultErrors() {
+		errorSchemaRef = "#/components/schemas/" + defaultErrorSchemaName
 	}
 
 	// Track registered path + method combinations to detect duplicates
@@ -890,25 +873,35 @@ func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
 	return s
 }
 
-// lookupDefaultErrorResponseMsg resolves the configured default_error_response_schema
-// message through the registry, which holds every loaded message — including
-// shared/imported types that are not part of the target file's param.Messages.
-// Returns nil when the option is unset or the message is not found.
-func lookupDefaultErrorResponseMsg(reg *descriptor.Registry) *descriptor.Message {
-	configured := reg.GetDefaultErrorResponseSchema()
-	if configured == "" {
-		return nil
+// defaultErrorSchemaName is the components/schemas key for the built-in error
+// body schema referenced by description-only error responses.
+const defaultErrorSchemaName = "Error"
+
+// defaultErrorSchema is the built-in error body schema ({ code, message })
+// attached to description-only 4xx/5xx responses. It is self-contained and
+// fully annotated so it documents a JSON contract and passes the IBM
+// schema-quality rules without depending on google.rpc.Status.
+func defaultErrorSchema() *OpenAPIV3Schema {
+	return &OpenAPIV3Schema{
+		Type:        "object",
+		Description: "Standard error response body returned for a failed request.",
+		Properties: map[string]*OpenAPIV3SchemaRef{
+			"code": {OpenAPIV3Schema: &OpenAPIV3Schema{
+				Type:        "integer",
+				Format:      "int32",
+				Description: "HTTP status code of the error (for example 400, 404, 500).",
+				Minimum:     float64Ptr(100),
+				Maximum:     599,
+			}},
+			"message": {OpenAPIV3Schema: &OpenAPIV3Schema{
+				Type:        "string",
+				Description: "Human-readable description of the error.",
+				MinLength:   uint64Ptr(0),
+				MaxLength:   4096,
+				Pattern:     "^[\\s\\S]*$",
+			}},
+		},
 	}
-	name := configured
-	if !strings.HasPrefix(name, ".") {
-		name = "." + name
-	}
-	msg, err := reg.LookupMsg("", name)
-	if err != nil {
-		log.Printf("Warning: default_error_response_schema %q not found; falling back to google.rpc.Status", configured)
-		return nil
-	}
-	return msg
 }
 
 // isErrorStatusCode reports whether an OpenAPI response status code key denotes
@@ -927,12 +920,11 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation, e
 				var content map[string]OpenAPIV3MediaType
 				// Pick the response body schema:
 				//   - an explicit annotation schema ($ref or inline) wins;
-				//   - otherwise a description-only error response (4xx/5xx) falls
-				//     back to the default error schema (errorSchemaRef: the
-				//     configured default_error_response_schema, or google.rpc.Status)
-				//     so it still documents a JSON body. Without this, an empty
-				//     media type trips ibm-content-contains-schema while no content
-				//     at all trips ibm-request-and-response-content.
+				//   - otherwise a description-only error response (4xx/5xx) uses
+				//     the built-in default error schema (errorSchemaRef) so it
+				//     still documents a JSON body. Without this, an empty media
+				//     type trips ibm-content-contains-schema while no content at
+				//     all trips ibm-request-and-response-content.
 				// Non-error description-only responses (e.g. 201) and 204 stay
 				// bodyless. Examples, if any, are added by applyResponseExamples.
 				if js := response.Schema.GetJsonSchema(); js != nil {
@@ -1591,23 +1583,13 @@ func buildMessageSchemasWithReferences(param param, resolvedNames map[string]str
 	}
 	schemas[statusMessageName] = statusSchemaRef
 
-	// Ensure the configured default error response schema is present in
-	// components even when it is an imported type absent from param.Messages
-	// (e.g. the non-merge per-file path). Skip if already built above.
-	//
-	// Only the top-level message is registered here, mirroring the google.rpc.Status
-	// handling above. Types it references are registered through the normal
-	// param.Messages/param.Enums passes — which under allow_merge contain every
-	// input proto. The configured error schema (and anything it references) is
-	// therefore expected to be part of the generated document; a self-contained
-	// model (e.g. { code, message }) needs nothing more.
-	if errMsg := lookupDefaultErrorResponseMsg(param.reg); errMsg != nil {
-		if name := resolvedNames[errMsg.FQMN()]; name != "" {
-			if _, exists := schemas[name]; !exists {
-				schemas[name] = &OpenAPIV3SchemaRef{
-					OpenAPIV3Schema: buildOpenAPIV3SchemaFromMessageWithReferences(errMsg, param.reg, resolvedNames),
-				}
-			}
+	// Register the built-in default error schema referenced by description-only
+	// error responses (unless default errors are disabled). It is self-contained,
+	// so there are no extra dependencies to register. Skip if a proto message
+	// already resolved to the same name, so a real type is never clobbered.
+	if !param.reg.GetDisableDefaultErrors() {
+		if _, exists := schemas[defaultErrorSchemaName]; !exists {
+			schemas[defaultErrorSchemaName] = &OpenAPIV3SchemaRef{OpenAPIV3Schema: defaultErrorSchema()}
 		}
 	}
 
