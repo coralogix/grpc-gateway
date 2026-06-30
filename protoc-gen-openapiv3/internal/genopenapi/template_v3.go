@@ -1594,6 +1594,13 @@ func buildMessageSchemasWithReferences(param param, resolvedNames map[string]str
 	// Ensure the configured default error response schema is present in
 	// components even when it is an imported type absent from param.Messages
 	// (e.g. the non-merge per-file path). Skip if already built above.
+	//
+	// Only the top-level message is registered here, mirroring the google.rpc.Status
+	// handling above. Types it references are registered through the normal
+	// param.Messages/param.Enums passes — which under allow_merge contain every
+	// input proto. The configured error schema (and anything it references) is
+	// therefore expected to be part of the generated document; a self-contained
+	// model (e.g. { code, message }) needs nothing more.
 	if errMsg := lookupDefaultErrorResponseMsg(param.reg); errMsg != nil {
 		if name := resolvedNames[errMsg.FQMN()]; name != "" {
 			if _, exists := schemas[name]; !exists {
