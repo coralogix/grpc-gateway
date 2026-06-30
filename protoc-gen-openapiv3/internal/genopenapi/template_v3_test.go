@@ -2127,6 +2127,10 @@ func TestApplyResponseExamples_MultipleMimeTypesAllSet(t *testing.T) {
 	}
 }
 
+// testErrorSchemaRef is the default error body schema reference (google.rpc.Status)
+// that buildOpenAPIV3Paths threads into the response builder in real generation.
+const testErrorSchemaRef = "#/components/schemas/Status"
+
 func TestExtractOpenAPIV3ResponsesFromProtoExtension_EmitsExamplesForNonSuccess(t *testing.T) {
 	op := &options.Operation{
 		Responses: map[string]*options.Response{
@@ -2138,7 +2142,8 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_EmitsExamplesForNonSuccess(
 			},
 		},
 	}
-	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	// No error schema ref here so the test isolates the example round-trip.
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, "")
 
 	resp, ok := got["404"]
 	if !ok || resp.OpenAPIV3Response == nil {
@@ -2160,24 +2165,42 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_EmitsExamplesForNonSuccess(
 	}
 }
 
-func TestExtractOpenAPIV3ResponsesFromProtoExtension_NoExamplesLeavesContentEmpty(t *testing.T) {
+func TestExtractOpenAPIV3ResponsesFromProtoExtension_NoContentWhenNoErrorSchema(t *testing.T) {
 	op := &options.Operation{
 		Responses: map[string]*options.Response{
 			"500": {Description: "Internal Server Error"},
 		},
 	}
-	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	// When no default error schema is available (empty ref), a description-only
+	// response stays bodyless rather than fabricating a schemaless content entry.
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, "")
 
 	resp, ok := got["500"]
 	if !ok || resp.OpenAPIV3Response == nil {
 		t.Fatalf("expected 500 response, got keys %v", keysOfResponses(got))
 	}
-	mt, ok := resp.Content["application/json"]
-	if !ok {
-		t.Fatal("expected default application/json content entry to be created")
+	if len(resp.Content) != 0 {
+		t.Errorf("expected no content entry for a description-only response without an error schema, got %v", resp.Content)
 	}
-	if mt.Example != nil {
-		t.Errorf("expected no Example when annotation has none, got %v", mt.Example)
+}
+
+func TestExtractOpenAPIV3ResponsesFromProtoExtension_ErrorFallsBackToErrorSchema(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"500": {Description: "Internal Server Error"},
+		},
+	}
+	// A description-only error response (4xx/5xx) references the default error
+	// schema so it documents a JSON body — satisfying both
+	// ibm-content-contains-schema and ibm-request-and-response-content.
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
+
+	mt, ok := got["500"].Content["application/json"]
+	if !ok || mt.Schema == nil {
+		t.Fatalf("expected the 500 error to carry the default error schema, got %#v", got["500"].Content)
+	}
+	if mt.Schema.Ref != testErrorSchemaRef {
+		t.Errorf("expected schema $ref %q, got %q", testErrorSchemaRef, mt.Schema.Ref)
 	}
 }
 
@@ -2197,7 +2220,7 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_SuccessStatusStillSkipped(t
 			"404": {Description: "Not Found"},
 		},
 	}
-	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
 	if _, ok := got["200"]; ok {
 		t.Error("200 response must not be emitted by extractOpenAPIV3ResponsesFromProtoExtension (success path is handled separately)")
 	}
@@ -2218,7 +2241,7 @@ func TestExtractOpenAPIV3ResponsesFromProtoExtension_MultipleNonSuccessResponses
 			"500": {Description: "Internal Server Error"}, // no examples
 		},
 	}
-	got := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	got := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
 	if len(got) != 2 {
 		t.Fatalf("expected 2 responses, got %d (keys=%v)", len(got), keysOfResponses(got))
 	}
@@ -2306,7 +2329,7 @@ func TestExtractResponses_CustomResponseCarriesRefSchema(t *testing.T) {
 			"201": responseWithRefSchema("Created", "CreateFooResponse"),
 		},
 	}
-	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
 
 	resp, ok := responses["201"]
 	if !ok {
@@ -2330,13 +2353,13 @@ func TestExtractResponses_CustomResponseCarriesRefSchema(t *testing.T) {
 	}
 }
 
-func TestExtractResponses_CustomResponseDescriptionOnly(t *testing.T) {
+func TestExtractResponses_CustomErrorResponseDescriptionOnly(t *testing.T) {
 	op := &options.Operation{
 		Responses: map[string]*options.Response{
 			"404": {Description: "Not Found"},
 		},
 	}
-	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
 
 	resp, ok := responses["404"]
 	if !ok {
@@ -2345,9 +2368,120 @@ func TestExtractResponses_CustomResponseDescriptionOnly(t *testing.T) {
 	if resp.Description != "Not Found" {
 		t.Errorf("expected description %q, got %q", "Not Found", resp.Description)
 	}
-	// Description-only responses carry no schema in their content.
-	if media, ok := resp.Content["application/json"]; ok && media.Schema != nil {
-		t.Errorf("expected no schema on a description-only response, got %v", media.Schema)
+	// A description-only error response falls back to the default error schema.
+	media, ok := resp.Content["application/json"]
+	if !ok || media.Schema == nil {
+		t.Fatalf("expected the default error schema on a description-only error, got %#v", resp.Content)
+	}
+	if media.Schema.Ref != testErrorSchemaRef {
+		t.Errorf("expected schema $ref %q, got %q", testErrorSchemaRef, media.Schema.Ref)
+	}
+}
+
+// TestExtractResponses_ExamplesWithoutSchemaStillEmitContent guards that
+// dropping the fabricated empty media type does not lose an annotated example:
+// applyResponseExamples must still lazily create the content entry so a custom
+// response with examples (but no schema) carries the example.
+func TestExtractResponses_ExamplesWithoutSchemaStillEmitContent(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"400": {
+				Description: "Bad Request",
+				Examples: map[string]string{
+					"application/json": `{"error":"bad"}`,
+				},
+			},
+		},
+	}
+	// Empty error ref so the only content source is the annotated example.
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, "")
+
+	resp, ok := responses["400"]
+	if !ok {
+		t.Fatal("expected a 400 response")
+	}
+	mt, ok := resp.Content["application/json"]
+	if !ok {
+		t.Fatal("expected a content entry to be created for an annotated example")
+	}
+	if mt.Example == nil {
+		t.Error("expected the annotated example to be carried on the media type")
+	}
+	if mt.Schema != nil {
+		t.Errorf("expected no schema on an example-only response, got %v", mt.Schema)
+	}
+}
+
+// TestExtractResponses_InlineSchemaIsRendered guards that an annotated non-$ref
+// (inline) response schema is rendered as content rather than dropped.
+func TestExtractResponses_InlineSchemaIsRendered(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"400": {
+				Description: "Bad Request",
+				Schema: &options.Schema{
+					JsonSchema: &options.JSONSchema{
+						Type:   []options.JSONSchema_JSONSchemaSimpleTypes{options.JSONSchema_STRING},
+						Format: "uuid",
+					},
+				},
+			},
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
+
+	resp, ok := responses["400"]
+	if !ok {
+		t.Fatal("expected a 400 response")
+	}
+	mt, ok := resp.Content["application/json"]
+	if !ok || mt.Schema == nil || mt.Schema.OpenAPIV3Schema == nil {
+		t.Fatalf("expected an inline schema to be rendered, got %#v", resp.Content)
+	}
+	if got := mt.Schema.OpenAPIV3Schema.Type; got != "string" {
+		t.Errorf("expected type %q, got %q", "string", got)
+	}
+	if got := mt.Schema.OpenAPIV3Schema.Format; got != "uuid" {
+		t.Errorf("expected format %q, got %q", "uuid", got)
+	}
+}
+
+// TestExtractResponses_InlineSchemaPreservesConstraints guards that array/object
+// validation constraints on an inline response schema are not dropped.
+func TestExtractResponses_InlineSchemaPreservesConstraints(t *testing.T) {
+	op := &options.Operation{
+		Responses: map[string]*options.Response{
+			"400": {
+				Description: "Bad Request",
+				Schema: &options.Schema{
+					JsonSchema: &options.JSONSchema{
+						Type:        []options.JSONSchema_JSONSchemaSimpleTypes{options.JSONSchema_ARRAY},
+						MinItems:    1,
+						MaxItems:    10,
+						UniqueItems: true,
+						Default:     "[]",
+					},
+				},
+			},
+		},
+	}
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
+
+	s := responses["400"].Content["application/json"].Schema.OpenAPIV3Schema
+	if s == nil {
+		t.Fatalf("expected an inline schema, got %#v", responses["400"].Content)
+	}
+	if s.MinItems == nil || *s.MinItems != 1 {
+		t.Errorf("expected minItems 1, got %v", s.MinItems)
+	}
+	if s.MaxItems != 10 {
+		t.Errorf("expected maxItems 10, got %d", s.MaxItems)
+	}
+	if !s.UniqueItems {
+		t.Error("expected uniqueItems true")
+	}
+	if s.Default == nil {
+		t.Error("expected default to be preserved")
 	}
 }
 
@@ -2359,7 +2493,7 @@ func TestExtractResponses_MultipleCustomResponsesEachCarrySchema(t *testing.T) {
 			"409": {Description: "Conflict"},
 		},
 	}
-	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
 
 	for code, wantRef := range map[string]string{
 		"201": "#/components/schemas/CreateFooResponse",
@@ -2377,8 +2511,11 @@ func TestExtractResponses_MultipleCustomResponsesEachCarrySchema(t *testing.T) {
 			t.Errorf("%s: expected schema $ref %q, got %q", code, wantRef, media.Schema.Ref)
 		}
 	}
-	if media, ok := responses["409"].Content["application/json"]; ok && media.Schema != nil {
-		t.Errorf("expected no schema on description-only 409, got %v", media.Schema)
+	// 409 is description-only but an error, so it falls back to the default error schema.
+	if media, ok := responses["409"].Content["application/json"]; !ok || media.Schema == nil {
+		t.Errorf("expected the default error schema on description-only 409, got %#v", responses["409"].Content)
+	} else if media.Schema.Ref != testErrorSchemaRef {
+		t.Errorf("expected 409 schema $ref %q, got %q", testErrorSchemaRef, media.Schema.Ref)
 	}
 }
 
@@ -2388,7 +2525,7 @@ func TestExtractResponses_SuccessStatusReserved(t *testing.T) {
 			"200": responseWithRefSchema("OK", "GetFooResponse"),
 		},
 	}
-	responses := extractOpenAPIV3ResponsesFromProtoExtension(op)
+	responses := extractOpenAPIV3ResponsesFromProtoExtension(op, testErrorSchemaRef)
 	if _, ok := responses["200"]; ok {
 		t.Error("expected the 200 response to be reserved for the main response body and skipped")
 	}
