@@ -527,6 +527,11 @@ func resolveNames(param param) map[string]string {
 	if err == nil && statusCodeType != nil {
 		typeNamesSet[statusCodeType.FQEN()] = struct{}{}
 	}
+	// The configured default error response schema may be an imported type that
+	// is not in param.Messages; include it so it gets a resolved component name.
+	if errMsg := lookupDefaultErrorResponseMsg(param.reg); errMsg != nil {
+		typeNamesSet[errMsg.FQMN()] = struct{}{}
+	}
 	typeNames := []string{}
 	for typeName := range typeNamesSet {
 		typeNames = append(typeNames, typeName)
@@ -586,14 +591,9 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 	// Prefer the configured default_error_response_schema message; otherwise
 	// fall back to google.rpc.Status. Empty when neither is available.
 	var errorSchemaRef string
-	if configured := param.reg.GetDefaultErrorResponseSchema(); configured != "" {
-		for _, msg := range param.Messages {
-			if strings.TrimPrefix(msg.FQMN(), ".") == configured {
-				if name := resolvedNames[msg.FQMN()]; name != "" {
-					errorSchemaRef = "#/components/schemas/" + name
-				}
-				break
-			}
+	if errMsg := lookupDefaultErrorResponseMsg(param.reg); errMsg != nil {
+		if name := resolvedNames[errMsg.FQMN()]; name != "" {
+			errorSchemaRef = "#/components/schemas/" + name
 		}
 	}
 	if errorSchemaRef == "" {
@@ -885,6 +885,27 @@ func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
 		s.Example = RawExample(js.Example)
 	}
 	return s
+}
+
+// lookupDefaultErrorResponseMsg resolves the configured default_error_response_schema
+// message through the registry, which holds every loaded message — including
+// shared/imported types that are not part of the target file's param.Messages.
+// Returns nil when the option is unset or the message is not found.
+func lookupDefaultErrorResponseMsg(reg *descriptor.Registry) *descriptor.Message {
+	configured := reg.GetDefaultErrorResponseSchema()
+	if configured == "" {
+		return nil
+	}
+	name := configured
+	if !strings.HasPrefix(name, ".") {
+		name = "." + name
+	}
+	msg, err := reg.LookupMsg("", name)
+	if err != nil {
+		log.Printf("Warning: default_error_response_schema %q not found; falling back to google.rpc.Status", configured)
+		return nil
+	}
+	return msg
 }
 
 // isErrorStatusCode reports whether an OpenAPI response status code key denotes
@@ -1566,6 +1587,19 @@ func buildMessageSchemasWithReferences(param param, resolvedNames map[string]str
 		OpenAPIV3Schema: statusSchema,
 	}
 	schemas[statusMessageName] = statusSchemaRef
+
+	// Ensure the configured default error response schema is present in
+	// components even when it is an imported type absent from param.Messages
+	// (e.g. the non-merge per-file path). Skip if already built above.
+	if errMsg := lookupDefaultErrorResponseMsg(param.reg); errMsg != nil {
+		if name := resolvedNames[errMsg.FQMN()]; name != "" {
+			if _, exists := schemas[name]; !exists {
+				schemas[name] = &OpenAPIV3SchemaRef{
+					OpenAPIV3Schema: buildOpenAPIV3SchemaFromMessageWithReferences(errMsg, param.reg, resolvedNames),
+				}
+			}
+		}
+	}
 
 	return schemas
 }
