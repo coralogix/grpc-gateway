@@ -904,10 +904,11 @@ func extractOpenAPIV3ResponsesFromProtoExtension(operation *options.Operation, e
 				// Pick the response body schema:
 				//   - an explicit annotation schema ($ref or inline) wins;
 				//   - otherwise a description-only error response (4xx/5xx) falls
-				//     back to the default error schema (google.rpc.Status) so it
-				//     still documents a JSON body. Without this, an empty media
-				//     type trips ibm-content-contains-schema while no content at
-				//     all trips ibm-request-and-response-content.
+				//     back to the default error schema (errorSchemaRef: the
+				//     configured default_error_response_schema, or google.rpc.Status)
+				//     so it still documents a JSON body. Without this, an empty
+				//     media type trips ibm-content-contains-schema while no content
+				//     at all trips ibm-request-and-response-content.
 				// Non-error description-only responses (e.g. 201) and 204 stay
 				// bodyless. Examples, if any, are added by applyResponseExamples.
 				if js := response.Schema.GetJsonSchema(); js != nil {
