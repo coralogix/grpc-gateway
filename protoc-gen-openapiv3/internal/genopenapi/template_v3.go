@@ -588,15 +588,18 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 	// error responses so they carry a documented JSON body — satisfying both
 	// ibm-content-contains-schema (content must have a schema) and
 	// ibm-request-and-response-content (non-204 responses should have content).
-	// Prefer the configured default_error_response_schema message; otherwise
-	// fall back to google.rpc.Status. Empty when neither is available.
+	// Prefer the configured default_error_response_schema message. Otherwise fall
+	// back to google.rpc.Status — but only when default errors are not disabled:
+	// a service that set disable_default_errors does not want the default gRPC
+	// Status body re-attached. An explicitly configured schema is always honored.
+	// Empty when neither applies (description-only errors then stay bodyless).
 	var errorSchemaRef string
 	if errMsg := lookupDefaultErrorResponseMsg(param.reg); errMsg != nil {
 		if name := resolvedNames[errMsg.FQMN()]; name != "" {
 			errorSchemaRef = "#/components/schemas/" + name
 		}
 	}
-	if errorSchemaRef == "" {
+	if errorSchemaRef == "" && !param.reg.GetDisableDefaultErrors() {
 		if statusMsg, err := param.reg.LookupMsg("google.rpc", "Status"); err == nil && statusMsg != nil {
 			if name := resolvedNames[statusMsg.FQMN()]; name != "" {
 				errorSchemaRef = "#/components/schemas/" + name
