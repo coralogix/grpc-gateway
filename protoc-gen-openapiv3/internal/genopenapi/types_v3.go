@@ -311,7 +311,19 @@ func (s *OpenAPIV3Schema) CamelCase() {
 		for _, schema := range s.OneOf {
 			schema.CamelCase()
 		}
-		return
+	}
+	if s.AllOf != nil {
+		for _, schema := range s.AllOf {
+			schema.CamelCase()
+		}
+	}
+	if s.AnyOf != nil {
+		for _, schema := range s.AnyOf {
+			schema.CamelCase()
+		}
+	}
+	if s.Not != nil {
+		s.Not.CamelCase()
 	}
 	newProperties := make(map[string]*OpenAPIV3SchemaRef)
 	newRequiredFields := make([]string, 0, len(s.Required))
