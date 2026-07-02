@@ -11,6 +11,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
+	"google.golang.org/genproto/googleapis/api/visibility"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -52,8 +53,9 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 		result := generateOneOfCombinations(oneofGroups, "TestMessage")
 		log.Printf("Result: %+v", result)
 
-		if len(result) != 24 {
-			t.Fatalf("Expected 4 combinations, got %d", len(result))
+		// Optional groups add an unset variant each: (4+1) * (2+1) * (3+1) = 60.
+		if len(result) != 60 {
+			t.Fatalf("Expected 60 combinations, got %d", len(result))
 		}
 
 	})
@@ -76,7 +78,7 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 			".example.ColorsBy.ColorsByStack":       "ColorsByStack",
 		}
 
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "ColorsBy", resolvedNames)
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "ColorsBy", resolvedNames, []string{"value"})
 
 		if len(result) != 2 {
 			t.Fatalf("Expected 2 combinations, got %d", len(result))
@@ -98,6 +100,27 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 		}
 	})
 
+	t.Run("CollisionWithExistingVariantTypeName", func(t *testing.T) {
+		oneofGroups := map[string][]*descriptor.Field{
+			"value": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("alpha")}},
+			},
+		}
+		resolvedNames := map[string]string{
+			".example.Test.TestAlpha":        "TestAlpha",
+			".example.Test.TestAlphaVariant": "TestAlphaVariant",
+		}
+
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", resolvedNames, []string{"value"})
+
+		if len(result) != 1 {
+			t.Fatalf("Expected 1 combination, got %d", len(result))
+		}
+		if _, ok := result["TestAlphaVariant2"]; !ok {
+			t.Errorf("Expected 'TestAlphaVariant2' after base and Variant collide, got keys: %v", result)
+		}
+	})
+
 	t.Run("NoCollision_NoVariantSuffix", func(t *testing.T) {
 		// When there's no collision, the Variant suffix should NOT be added
 		oneofGroups := map[string][]*descriptor.Field{
@@ -112,7 +135,7 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 			".example.SomeOtherType": "SomeOtherType",
 		}
 
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "MyMessage", resolvedNames)
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "MyMessage", resolvedNames, []string{"value"})
 
 		if len(result) != 2 {
 			t.Fatalf("Expected 2 combinations, got %d", len(result))
@@ -148,7 +171,7 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 			".example.Msg.MsgCollides": "MsgCollides", // This collides with "Msg_collides" -> "MsgCollides"
 		}
 
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Msg", resolvedNames)
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Msg", resolvedNames, []string{"value"})
 
 		if len(result) != 2 {
 			t.Fatalf("Expected 2 combinations, got %d", len(result))
@@ -179,7 +202,7 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 
 		resolvedNames := map[string]string{}
 
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", resolvedNames)
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", resolvedNames, []string{"value"})
 
 		if len(result) != 2 {
 			t.Fatalf("Expected 2 combinations, got %d", len(result))
@@ -201,7 +224,7 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 			},
 		}
 
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", nil)
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", nil, []string{"value"})
 
 		if len(result) != 1 {
 			t.Fatalf("Expected 1 combination, got %d", len(result))
@@ -230,7 +253,7 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 			".example.Annotation.WidgetScope.SpecificWidgets": "Annotation.WidgetScope.SpecificWidgets",
 		}
 
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Annotation.WidgetScope", resolvedNames)
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Annotation.WidgetScope", resolvedNames, []string{"value"})
 
 		if len(result) != 2 {
 			t.Fatalf("Expected 2 combinations, got %d", len(result))
@@ -251,88 +274,440 @@ func Test_generateOneOfCombinations2(t *testing.T) {
 			t.Errorf("Expected 'AnnotationWidgetScopeSpecificWidgets' to NOT exist (should be renamed), got keys: %v", result)
 		}
 	})
-}
 
-func TestApplyInferredDiscriminatorFields(t *testing.T) {
-	t.Run("single unique field", func(t *testing.T) {
-		schemas := map[string]*OpenAPIV3SchemaRef{
-			"LogRulesVariant": {
-				OpenAPIV3Schema: &OpenAPIV3Schema{
-					Properties: map[string]*OpenAPIV3SchemaRef{
-						"name":     {},
-						"priority": {},
-						"logRules": {},
-					},
-					Required: []string{"name", "priority"},
-				},
-			},
-			"SpanRulesVariant": {
-				OpenAPIV3Schema: &OpenAPIV3Schema{
-					Properties: map[string]*OpenAPIV3SchemaRef{
-						"name":      {},
-						"priority":  {},
-						"spanRules": {},
-					},
-					Required: []string{"name", "priority"},
-				},
+	t.Run("SyntheticUnsetNameCollisionWithRealField", func(t *testing.T) {
+		oneofGroups := map[string][]*descriptor.Field{
+			"state": {
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("state_unset")}},
+				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("ready")}},
 			},
 		}
 
-		applyInferredDiscriminatorFields(schemas)
+		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Msg", nil, nil)
 
-		if got := schemas["LogRulesVariant"].Required; !slices.Equal(got, []string{"name", "priority", "logRules"}) {
-			t.Fatalf("LogRulesVariant required fields = %v, want %v", got, []string{"name", "priority", "logRules"})
+		if len(result) != 3 {
+			t.Fatalf("optional oneof should keep real, ready, and unset combinations, got %d: %v", len(result), result)
 		}
-		if got := schemas["SpanRulesVariant"].Required; !slices.Equal(got, []string{"name", "priority", "spanRules"}) {
-			t.Fatalf("SpanRulesVariant required fields = %v, want %v", got, []string{"name", "priority", "spanRules"})
+		baseBranch := result["MsgStateUnset"]["state"]
+		variantBranch := result["MsgStateUnsetVariant"]["state"]
+		if (baseBranch == nil) == (variantBranch == nil) {
+			t.Fatal("expected exactly one branch to be the synthetic unset branch")
 		}
-	})
-
-	t.Run("combo-only discriminator", func(t *testing.T) {
-		schemas := map[string]*OpenAPIV3SchemaRef{
-			"AlphaXray":   {OpenAPIV3Schema: schemaWithProperties("common", "alpha", "xray")},
-			"AlphaYankee": {OpenAPIV3Schema: schemaWithProperties("common", "alpha", "yankee")},
-			"BetaXray":    {OpenAPIV3Schema: schemaWithProperties("common", "beta", "xray")},
-			"BetaYankee":  {OpenAPIV3Schema: schemaWithProperties("common", "beta", "yankee")},
+		selectedBranch := baseBranch
+		if selectedBranch == nil {
+			selectedBranch = variantBranch
 		}
-
-		applyInferredDiscriminatorFields(schemas)
-
-		assertRequiredFields(t, schemas["AlphaXray"].Required, []string{"alpha", "xray"})
-		assertRequiredFields(t, schemas["AlphaYankee"].Required, []string{"alpha", "yankee"})
-		assertRequiredFields(t, schemas["BetaXray"].Required, []string{"beta", "xray"})
-		assertRequiredFields(t, schemas["BetaYankee"].Required, []string{"beta", "yankee"})
-	})
-
-	t.Run("impossible discriminator leaves schemas unchanged", func(t *testing.T) {
-		schemas := map[string]*OpenAPIV3SchemaRef{
-			"Left":  {OpenAPIV3Schema: schemaWithProperties("common", "value")},
-			"Right": {OpenAPIV3Schema: schemaWithProperties("common", "value")},
+		if got := selectedBranch.GetName(); got != "state_unset" {
+			t.Fatalf("expected real state_unset branch to survive, got selected field %q", got)
 		}
-
-		applyInferredDiscriminatorFields(schemas)
-
-		if len(schemas["Left"].Required) != 0 {
-			t.Fatalf("Left required fields = %v, want unchanged empty slice", schemas["Left"].Required)
-		}
-		if len(schemas["Right"].Required) != 0 {
-			t.Fatalf("Right required fields = %v, want unchanged empty slice", schemas["Right"].Required)
+		if got := result["MsgReady"]["state"].GetName(); got != "ready" {
+			t.Fatalf("expected ready branch to stay unchanged, got selected field %q", got)
 		}
 	})
 }
 
-func schemaWithProperties(propertyNames ...string) *OpenAPIV3Schema {
-	properties := make(map[string]*OpenAPIV3SchemaRef, len(propertyNames))
-	for _, propertyName := range propertyNames {
-		properties[propertyName] = &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{}}
+func TestOneOfGroupRequiredDetection(t *testing.T) {
+	if isOneOfGroupRequired("choice", nil) {
+		t.Fatal("oneof group with no required annotation should be optional")
 	}
-	return &OpenAPIV3Schema{Properties: properties}
+	if !isOneOfGroupRequired("choice", []string{"choice"}) {
+		t.Fatal("oneof group named in required fields should be required")
+	}
+	if isOneOfGroupRequired("choice", []string{"left", "right"}) {
+		t.Fatal("oneof group with required alternatives should stay optional unless the group itself is required")
+	}
+}
+
+func TestUniqueOneOfCombinationName(t *testing.T) {
+	tests := []struct {
+		name              string
+		combinationName   string
+		existingTypeNames map[string]struct{}
+		namedCombinations map[string]map[string]*descriptor.Field
+		want              string
+	}{
+		{
+			name:              "no collision",
+			combinationName:   "MsgState",
+			existingTypeNames: map[string]struct{}{},
+			namedCombinations: map[string]map[string]*descriptor.Field{},
+			want:              "MsgState",
+		},
+		{
+			name:              "one collision",
+			combinationName:   "MsgState",
+			existingTypeNames: map[string]struct{}{"MsgState": {}},
+			namedCombinations: map[string]map[string]*descriptor.Field{},
+			want:              "MsgStateVariant",
+		},
+		{
+			name:              "two collisions",
+			combinationName:   "MsgState",
+			existingTypeNames: map[string]struct{}{"MsgState": {}, "MsgStateVariant": {}},
+			namedCombinations: map[string]map[string]*descriptor.Field{},
+			want:              "MsgStateVariant2",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := uniqueOneOfCombinationName(tt.combinationName, tt.existingTypeNames, tt.namedCombinations)
+			if got != tt.want {
+				t.Fatalf("uniqueOneOfCombinationName() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_OptionalOneOfGroupsIncludeUnsetVariants(t *testing.T) {
+	msg := newOneOfSchemaFixture(t, []string{"name", "layout"})
+
+	schema, oneOfSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Dashboard"}, nil)
+
+	// Two optional groups with two fields each add unset variants: (2+1) * (2+1) = 9.
+	if len(schema.OneOf) != 9 {
+		t.Fatalf("optional oneof groups should create 9 top-level oneOf schemas, got %d", len(schema.OneOf))
+	}
+	if len(oneOfSchemas) != 9 {
+		t.Fatalf("optional oneof groups should create 9 component variants, got %d", len(oneOfSchemas))
+	}
+
+	unsetSchema := oneOfSchemas["DashboardAutoRefreshUnsetTimeFrameUnset"].OpenAPIV3Schema
+	assertRequiredFields(t, unsetSchema.Required, []string{"name", "layout"})
+	assertForbiddenFields(t, unsetSchema, []string{"off", "one_minute", "absolute_time_frame", "relative_time_frame"})
+
+	offRelativeSchema := oneOfSchemas["DashboardOffRelativeTimeFrame"].OpenAPIV3Schema
+	assertRequiredFields(t, offRelativeSchema.Required, []string{"name", "layout", "off", "relative_time_frame"})
+	assertForbiddenFields(t, offRelativeSchema, []string{"one_minute", "absolute_time_frame"})
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_OneOptionalOneOfGroupRequiresSelectedField(t *testing.T) {
+	msg := newSingleOneOfSchemaFixture(t, []string{"name"})
+
+	schema, oneOfSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Rule"}, nil)
+
+	// One optional group with two fields adds an unset variant: 2 + 1 = 3.
+	if len(schema.OneOf) != 3 {
+		t.Fatalf("optional oneof group should create 3 variants, got %d", len(schema.OneOf))
+	}
+	assertRequiredFields(t, oneOfSchemas["RuleRulesUnset"].Required, []string{"name"})
+	assertForbiddenFields(t, oneOfSchemas["RuleRulesUnset"].OpenAPIV3Schema, []string{"log_rules", "span_rules"})
+
+	assertRequiredFields(t, oneOfSchemas["RuleLogRules"].Required, []string{"name", "log_rules"})
+	assertForbiddenFields(t, oneOfSchemas["RuleLogRules"].OpenAPIV3Schema, []string{"span_rules"})
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_OneOfGroupsIgnoreHiddenAlternatives(t *testing.T) {
+	msg := newSingleOneOfSchemaFixtureWithHiddenAlternative(t, nil)
+	registry := descriptor.NewRegistry()
+
+	schema, oneOfSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Rule"}, registry)
+
+	// One optional group with two visible fields adds an unset variant: 2 + 1 = 3.
+	if len(schema.OneOf) != 3 {
+		t.Fatalf("visible optional oneof fields should create 3 variants, got %d", len(schema.OneOf))
+	}
+	if len(oneOfSchemas) != 3 {
+		t.Fatalf("visible optional oneof fields should create 3 component schemas, got %d", len(oneOfSchemas))
+	}
+	if _, ok := oneOfSchemas["RulePrivateRules"]; ok {
+		t.Fatal("hidden oneof alternative should not create a public component schema")
+	}
+
+	assertRequiredFields(t, oneOfSchemas["RuleLogRules"].Required, []string{"log_rules"})
+	assertForbiddenFields(t, oneOfSchemas["RuleLogRules"].OpenAPIV3Schema, []string{"span_rules"})
+	assertForbiddenFields(t, oneOfSchemas["RuleRulesUnset"].OpenAPIV3Schema, []string{"log_rules", "span_rules"})
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_RequiredOneOfWithOneVisibleAlternativeRequiresField(t *testing.T) {
+	msg := newSingleVisibleRequiredOneOfSchemaFixture(t)
+	registry := descriptor.NewRegistry()
+
+	schema, oneOfSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Rule"}, registry)
+
+	if len(schema.OneOf) != 0 {
+		t.Fatalf("one visible oneof field should collapse to a direct schema, got %d oneOf variants", len(schema.OneOf))
+	}
+	if len(oneOfSchemas) != 0 {
+		t.Fatalf("one visible oneof field should not create component variants, got %d", len(oneOfSchemas))
+	}
+	assertRequiredFields(t, schema.Required, []string{"log_rules"})
+}
+
+func TestBuildOpenAPIV3SchemaFromMessageWithReferences_OneOfGroupsIgnoreHiddenAlternatives(t *testing.T) {
+	msg := newSingleOneOfSchemaFixtureWithHiddenAlternative(t, nil)
+	registry := descriptor.NewRegistry()
+
+	schema := buildOpenAPIV3SchemaFromMessageWithReferences(msg, registry, map[string]string{msg.FQMN(): "Rule"})
+
+	// One optional group with two visible fields adds an unset variant: 2 + 1 = 3.
+	if len(schema.OneOf) != 3 {
+		t.Fatalf("visible optional oneof fields should create 3 top-level oneOf refs, got %d", len(schema.OneOf))
+	}
+	assertOneOfRefs(t, schema.OneOf, []string{
+		"#/components/schemas/RuleLogRules",
+		"#/components/schemas/RuleRulesUnset",
+		"#/components/schemas/RuleSpanRules",
+	})
+}
+
+func TestBuildOpenAPIV3SchemaFromMessageWithReferences_RequiredOneOfWithOneVisibleAlternativeRequiresField(t *testing.T) {
+	msg := newSingleVisibleRequiredOneOfSchemaFixture(t)
+	registry := descriptor.NewRegistry()
+
+	schema := buildOpenAPIV3SchemaFromMessageWithReferences(msg, registry, map[string]string{msg.FQMN(): "Rule"})
+
+	if len(schema.OneOf) != 0 {
+		t.Fatalf("one visible oneof field should collapse to a direct schema, got %d oneOf variants", len(schema.OneOf))
+	}
+	assertRequiredFields(t, schema.Required, []string{"log_rules"})
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_RequiredOneOfGroupKeepsVariants(t *testing.T) {
+	msg := newOneOfSchemaFixture(t, []string{"name", "layout", "auto_refresh", "time_frame"})
+
+	schema, oneOfSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Dashboard"}, nil)
+
+	// Required oneof groups do not add unset variants: 2 * 2 = 4.
+	if len(schema.OneOf) != 4 {
+		t.Fatalf("required oneof groups should create 4 variants, got %d: %v", len(schema.OneOf), schema.OneOf)
+	}
+	if len(oneOfSchemas) != 4 {
+		t.Fatalf("required oneof groups should create 4 component schemas, got %d", len(oneOfSchemas))
+	}
+
+	if _, ok := oneOfSchemas["DashboardAutoRefreshUnsetRelativeTimeFrame"]; ok {
+		t.Fatal("required auto_refresh group should not create unset auto-refresh variant")
+	}
+	if _, ok := oneOfSchemas["DashboardOffTimeFrameUnset"]; ok {
+		t.Fatal("required time_frame group should not create unset time-frame variant")
+	}
+	assertRequiredFields(t, oneOfSchemas["DashboardOffRelativeTimeFrame"].Required, []string{"name", "layout", "off", "relative_time_frame"})
+}
+
+func newSingleOneOfSchemaFixture(t *testing.T, required []string) *descriptor.Message {
+	t.Helper()
+
+	var zero int32
+	fieldType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	field := func(name string, number int32, oneofIndex *int32) *descriptor.Field {
+		return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:       proto.String(name),
+			Number:     proto.Int32(number),
+			Label:      &label,
+			Type:       &fieldType,
+			OneofIndex: oneofIndex,
+		}}
+	}
+	msgOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+		JsonSchema: &options.JSONSchema{Required: required},
+	})
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("Rule"),
+		OneofDecl: []*descriptorpb.OneofDescriptorProto{
+			{Name: proto.String("rules")},
+		},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			field("name", 1, nil).FieldDescriptorProto,
+			field("log_rules", 2, &zero).FieldDescriptorProto,
+			field("span_rules", 3, &zero).FieldDescriptorProto,
+		},
+		Options: msgOptions,
+	}
+
+	file := &descriptor.File{FileDescriptorProto: &descriptorpb.FileDescriptorProto{
+		Package: proto.String("test"),
+	}}
+	msg := &descriptor.Message{DescriptorProto: msgDesc, File: file}
+	for _, fieldDescriptor := range msgDesc.Field {
+		msg.Fields = append(msg.Fields, &descriptor.Field{FieldDescriptorProto: fieldDescriptor, Message: msg})
+	}
+	return msg
+}
+
+func newSingleOneOfSchemaFixtureWithHiddenAlternative(t *testing.T, required []string) *descriptor.Message {
+	t.Helper()
+
+	var zero int32
+	fieldType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	field := func(name string, number int32, oneofIndex *int32, options *descriptorpb.FieldOptions) *descriptor.Field {
+		return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:       proto.String(name),
+			Number:     proto.Int32(number),
+			Label:      &label,
+			Type:       &fieldType,
+			OneofIndex: oneofIndex,
+			Options:    options,
+		}}
+	}
+
+	hiddenOptions := &descriptorpb.FieldOptions{}
+	proto.SetExtension(hiddenOptions, visibility.E_FieldVisibility, &visibility.VisibilityRule{Restriction: "INTERNAL"})
+
+	msgOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+		JsonSchema: &options.JSONSchema{Required: required},
+	})
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("Rule"),
+		OneofDecl: []*descriptorpb.OneofDescriptorProto{
+			{Name: proto.String("rules")},
+		},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			field("name", 1, nil, nil).FieldDescriptorProto,
+			field("log_rules", 2, &zero, nil).FieldDescriptorProto,
+			field("span_rules", 3, &zero, nil).FieldDescriptorProto,
+			field("private_rules", 4, &zero, hiddenOptions).FieldDescriptorProto,
+		},
+		Options: msgOptions,
+	}
+
+	file := &descriptor.File{FileDescriptorProto: &descriptorpb.FileDescriptorProto{
+		Package: proto.String("test"),
+	}}
+	msg := &descriptor.Message{DescriptorProto: msgDesc, File: file}
+	for _, fieldDescriptor := range msgDesc.Field {
+		msg.Fields = append(msg.Fields, &descriptor.Field{FieldDescriptorProto: fieldDescriptor, Message: msg})
+	}
+	return msg
+}
+
+func newSingleVisibleRequiredOneOfSchemaFixture(t *testing.T) *descriptor.Message {
+	t.Helper()
+
+	var zero int32
+	fieldType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	field := func(name string, number int32, oneofIndex *int32, options *descriptorpb.FieldOptions) *descriptor.Field {
+		return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:       proto.String(name),
+			Number:     proto.Int32(number),
+			Label:      &label,
+			Type:       &fieldType,
+			OneofIndex: oneofIndex,
+			Options:    options,
+		}}
+	}
+
+	hiddenOptions := &descriptorpb.FieldOptions{}
+	proto.SetExtension(hiddenOptions, visibility.E_FieldVisibility, &visibility.VisibilityRule{Restriction: "INTERNAL"})
+
+	msgOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+		JsonSchema: &options.JSONSchema{Required: []string{"rules"}},
+	})
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("Rule"),
+		OneofDecl: []*descriptorpb.OneofDescriptorProto{
+			{Name: proto.String("rules")},
+		},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			field("name", 1, nil, nil).FieldDescriptorProto,
+			field("log_rules", 2, &zero, nil).FieldDescriptorProto,
+			field("private_rules", 3, &zero, hiddenOptions).FieldDescriptorProto,
+		},
+		Options: msgOptions,
+	}
+
+	file := &descriptor.File{FileDescriptorProto: &descriptorpb.FileDescriptorProto{
+		Package: proto.String("test"),
+	}}
+	msg := &descriptor.Message{DescriptorProto: msgDesc, File: file}
+	for _, fieldDescriptor := range msgDesc.Field {
+		msg.Fields = append(msg.Fields, &descriptor.Field{FieldDescriptorProto: fieldDescriptor, Message: msg})
+	}
+	return msg
+}
+
+func newOneOfSchemaFixture(t *testing.T, required []string) *descriptor.Message {
+	t.Helper()
+
+	fieldType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	oneOfIndex := func(i int32) *int32 { return &i }
+	field := func(name string, number int32, oneofIndex *int32) *descriptor.Field {
+		return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:       proto.String(name),
+			Number:     proto.Int32(number),
+			Label:      &label,
+			Type:       &fieldType,
+			OneofIndex: oneofIndex,
+		}}
+	}
+
+	msgOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+		JsonSchema: &options.JSONSchema{Required: required},
+	})
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("Dashboard"),
+		OneofDecl: []*descriptorpb.OneofDescriptorProto{
+			{Name: proto.String("auto_refresh")},
+			{Name: proto.String("time_frame")},
+		},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			field("name", 1, nil).FieldDescriptorProto,
+			field("layout", 2, nil).FieldDescriptorProto,
+			field("off", 3, oneOfIndex(0)).FieldDescriptorProto,
+			field("one_minute", 4, oneOfIndex(0)).FieldDescriptorProto,
+			field("relative_time_frame", 5, oneOfIndex(1)).FieldDescriptorProto,
+			field("absolute_time_frame", 6, oneOfIndex(1)).FieldDescriptorProto,
+		},
+		Options: msgOptions,
+	}
+
+	file := &descriptor.File{FileDescriptorProto: &descriptorpb.FileDescriptorProto{
+		Package: proto.String("test"),
+	}}
+	msg := &descriptor.Message{DescriptorProto: msgDesc, File: file}
+	for _, fieldDescriptor := range msgDesc.Field {
+		msg.Fields = append(msg.Fields, &descriptor.Field{FieldDescriptorProto: fieldDescriptor, Message: msg})
+	}
+	return msg
 }
 
 func assertRequiredFields(t *testing.T, got []string, want []string) {
 	t.Helper()
 	if !slices.Equal(got, want) {
 		t.Fatalf("required fields = %v, want %v", got, want)
+	}
+}
+
+func assertForbiddenFields(t *testing.T, schema *OpenAPIV3Schema, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(schema.AllOf))
+	for _, schemaRef := range schema.AllOf {
+		if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil || schemaRef.OpenAPIV3Schema.Not == nil || schemaRef.OpenAPIV3Schema.Not.OpenAPIV3Schema == nil {
+			continue
+		}
+		got = append(got, schemaRef.OpenAPIV3Schema.Not.OpenAPIV3Schema.Required...)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("forbidden fields = %v, want %v", got, want)
+	}
+}
+
+func assertOneOfRefs(t *testing.T, gotRefs []*OpenAPIV3SchemaRef, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(gotRefs))
+	for _, schemaRef := range gotRefs {
+		if schemaRef != nil {
+			got = append(got, schemaRef.Ref)
+		}
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("oneOf refs = %v, want %v", got, want)
 	}
 }
 
@@ -988,7 +1363,7 @@ func TestBuildSchemaFromFields_EmptyMessage_AdditionalPropertiesFalse(t *testing
 // TestOneOfCombinationsStableOrder verifies that iterating the combinations map and
 // sorting produces a deterministic order regardless of Go's map randomisation.
 func TestOneOfCombinationsStableOrder(t *testing.T) {
-	// Two oneof groups, two variants each → 4 CartesianProduct combinations.
+	// Two optional oneof groups, two variants each -> 9 Cartesian-product combinations.
 	oneofGroups := map[string][]*descriptor.Field{
 		"kind": {
 			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("alpha")}},
@@ -1012,8 +1387,9 @@ func TestOneOfCombinationsStableOrder(t *testing.T) {
 	}
 
 	first := collectSorted()
-	if len(first) != 4 {
-		t.Fatalf("expected 4 combinations, got %d", len(first))
+	// Two optional groups with two fields each add unset variants: (2+1) * (2+1) = 9.
+	if len(first) != 9 {
+		t.Fatalf("expected 9 combinations, got %d", len(first))
 	}
 
 	// Run many times; all must produce the same order.
@@ -1025,7 +1401,17 @@ func TestOneOfCombinationsStableOrder(t *testing.T) {
 	}
 
 	// Verify the expected names (proto field names, sorted alphabetically by combination name).
-	want := []string{"MsgAlphaFast", "MsgAlphaSlow", "MsgBetaFast", "MsgBetaSlow"}
+	want := []string{
+		"MsgAlphaFast",
+		"MsgAlphaModeUnset",
+		"MsgAlphaSlow",
+		"MsgBetaFast",
+		"MsgBetaModeUnset",
+		"MsgBetaSlow",
+		"MsgKindUnsetFast",
+		"MsgKindUnsetModeUnset",
+		"MsgKindUnsetSlow",
+	}
 	if !slices.Equal(first, want) {
 		t.Errorf("unexpected combination names:\n  want %v\n   got %v", want, first)
 	}
@@ -1392,6 +1778,244 @@ func TestBuildRequestBody_RequiredFalseWhenOnlyPathParamRequired(t *testing.T) {
 	if body.Required {
 		t.Errorf("expected requestBody.required=false when only required field is a path param, got true")
 	}
+}
+
+func TestBuildRequestBody_OptionalOneOfGroupsApplyRequiredAndForbiddenFields(t *testing.T) {
+	msg := newOneOfSchemaFixture(t, []string{"name", "layout"})
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("CreateDashboard"),
+			InputType:  proto.String(".test.Dashboard"),
+			OutputType: proto.String(".test.Dashboard"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Body:       &descriptor.Body{},
+		Method:     method,
+	}
+
+	body, bodySchemas := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Dashboard"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if !body.Required {
+		t.Fatal("expected requestBody.required=true when oneof body variants have required fields")
+	}
+	bodySchema := body.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema
+	// Request bodies use the same optional-group math: (2+1) * (2+1) = 9.
+	if len(bodySchema.OneOf) != 9 {
+		t.Fatalf("optional oneof groups should create 9 request-body oneOf schemas, got %d", len(bodySchema.OneOf))
+	}
+	if len(bodySchemas) != 9 {
+		t.Fatalf("optional oneof groups should create 9 request-body component variants, got %d", len(bodySchemas))
+	}
+
+	unsetSchema := bodySchemas["DashboardAutoRefreshUnsetTimeFrameUnset"].OpenAPIV3Schema
+	assertRequiredFields(t, unsetSchema.Required, []string{"name", "layout"})
+	assertForbiddenFields(t, unsetSchema, []string{"off", "one_minute", "absolute_time_frame", "relative_time_frame"})
+
+	offRelativeSchema := bodySchemas["DashboardOffRelativeTimeFrame"].OpenAPIV3Schema
+	assertRequiredFields(t, offRelativeSchema.Required, []string{"name", "layout", "off", "relative_time_frame"})
+	assertForbiddenFields(t, offRelativeSchema, []string{"one_minute", "absolute_time_frame"})
+}
+
+func TestBuildRequestBody_OptionalOneOfUnsetBranchKeepsBodyOptional(t *testing.T) {
+	msg := newSingleOneOfSchemaFixture(t, nil)
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("CreateRule"),
+			InputType:  proto.String(".test.Rule"),
+			OutputType: proto.String(".test.Rule"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Body:       &descriptor.Body{},
+		Method:     method,
+	}
+
+	body, bodySchemas := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Rule"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if body.Required {
+		t.Fatal("expected requestBody.required=false because the unset oneof branch allows an omitted body")
+	}
+	if len(bodySchemas) != 3 {
+		t.Fatalf("optional oneof group should create 3 request-body component variants, got %d", len(bodySchemas))
+	}
+
+	assertRequiredFields(t, bodySchemas["RuleLogRules"].Required, []string{"log_rules"})
+	assertRequiredFields(t, bodySchemas["RuleRulesUnset"].Required, nil)
+}
+
+func TestBuildRequestBody_OneOfGroupsIgnoreHiddenAlternatives(t *testing.T) {
+	msg := newSingleOneOfSchemaFixtureWithHiddenAlternative(t, nil)
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("CreateRule"),
+			InputType:  proto.String(".test.Rule"),
+			OutputType: proto.String(".test.Rule"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Body:       &descriptor.Body{},
+		Method:     method,
+	}
+
+	body, bodySchemas := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Rule"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	bodySchema := body.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema
+	// One optional group with two visible fields adds an unset variant: 2 + 1 = 3.
+	if len(bodySchema.OneOf) != 3 {
+		t.Fatalf("visible optional oneof fields should create 3 request-body oneOf schemas, got %d", len(bodySchema.OneOf))
+	}
+	if len(bodySchemas) != 3 {
+		t.Fatalf("visible optional oneof fields should create 3 request-body component variants, got %d", len(bodySchemas))
+	}
+	if _, ok := bodySchemas["RulePrivateRules"]; ok {
+		t.Fatal("hidden oneof alternative should not create a public request-body component schema")
+	}
+
+	assertRequiredFields(t, bodySchemas["RuleLogRules"].Required, []string{"log_rules"})
+	assertForbiddenFields(t, bodySchemas["RuleLogRules"].OpenAPIV3Schema, []string{"span_rules"})
+	assertForbiddenFields(t, bodySchemas["RuleRulesUnset"].OpenAPIV3Schema, []string{"log_rules", "span_rules"})
+}
+
+func TestBuildRequestBody_RequiredOneOfWithOneVisibleAlternativeRequiresField(t *testing.T) {
+	msg := newSingleVisibleRequiredOneOfSchemaFixture(t)
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("CreateRule"),
+			InputType:  proto.String(".test.Rule"),
+			OutputType: proto.String(".test.Rule"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Body:       &descriptor.Body{},
+		Method:     method,
+	}
+
+	body, bodySchemas := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Rule"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if len(bodySchemas) != 0 {
+		t.Fatalf("one visible oneof field should not create request-body component variants, got %d", len(bodySchemas))
+	}
+
+	bodySchema := body.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema
+	if len(bodySchema.OneOf) != 0 {
+		t.Fatalf("one visible oneof field should collapse to a direct request-body schema, got %d oneOf variants", len(bodySchema.OneOf))
+	}
+	assertRequiredFields(t, bodySchema.Required, []string{"log_rules"})
+}
+
+func TestBuildRequestBody_OptionalOneOfUnsetBranchKeptWhenBodyPropertiesEmpty(t *testing.T) {
+	msg := newSingleOneOfSchemaFixture(t, nil)
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("UpdateRule"),
+			InputType:  proto.String(".test.Rule"),
+			OutputType: proto.String(".test.Rule"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+
+	nameField := msg.Fields[0]
+	binding := &descriptor.Binding{
+		HTTPMethod: "PATCH",
+		Body:       &descriptor.Body{},
+		Method:     method,
+		PathParams: []descriptor.Parameter{{
+			FieldPath: descriptor.FieldPath{{Name: "name", Target: nameField}},
+			Target:    nameField,
+			Method:    method,
+		}},
+	}
+
+	body, bodySchemas := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Rule"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if body.Required {
+		t.Fatal("expected request body to stay optional because the unset oneof branch is valid")
+	}
+	bodySchema := body.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema
+	// One optional group with two fields adds an unset variant: 2 + 1 = 3.
+	if len(bodySchema.OneOf) != 3 {
+		t.Fatalf("optional oneof group should create 3 request-body oneOf schemas, got %d", len(bodySchema.OneOf))
+	}
+	if len(bodySchemas) != 3 {
+		t.Fatalf("optional oneof group should create 3 request-body component variants, got %d", len(bodySchemas))
+	}
+
+	unsetSchema := bodySchemas["RuleRulesUnset"].OpenAPIV3Schema
+	if len(unsetSchema.Properties) != 0 {
+		t.Fatalf("unset branch should have no body properties after path params are removed, got %v", unsetSchema.Properties)
+	}
+	assertRequiredFields(t, unsetSchema.Required, nil)
+	assertForbiddenFields(t, unsetSchema, []string{"log_rules", "span_rules"})
+}
+
+func TestBuildRequestBody_PathSelectedOneOfGroupKeepsOnlySelectedBranch(t *testing.T) {
+	msg := newSingleOneOfSchemaFixture(t, []string{"name"})
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("UpdateRuleByLogRules"),
+			InputType:  proto.String(".test.Rule"),
+			OutputType: proto.String(".test.Rule"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+
+	logRulesField := msg.Fields[1]
+	binding := &descriptor.Binding{
+		HTTPMethod: "PATCH",
+		Body:       &descriptor.Body{},
+		Method:     method,
+		PathParams: []descriptor.Parameter{{
+			FieldPath: descriptor.FieldPath{{Name: "log_rules", Target: logRulesField}},
+			Target:    logRulesField,
+			Method:    method,
+		}},
+	}
+
+	body, bodySchemas := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Rule"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if len(bodySchemas) != 0 {
+		t.Fatalf("path-selected oneof group should leave one direct body schema, got %d component variants", len(bodySchemas))
+	}
+
+	bodySchema := body.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema
+	if len(bodySchema.OneOf) != 0 {
+		t.Fatalf("path-selected oneof group should not keep unset/sibling body variants, got %d oneOf refs", len(bodySchema.OneOf))
+	}
+	if _, ok := bodySchema.Properties["log_rules"]; ok {
+		t.Fatal("path-selected oneof field should not remain as a body property")
+	}
+	if _, ok := bodySchema.Properties["name"]; !ok {
+		t.Fatal("common body field should remain in the body schema")
+	}
+	assertRequiredFields(t, bodySchema.Required, []string{"name"})
+	assertForbiddenFields(t, bodySchema, []string{"span_rules"})
 }
 
 func TestFieldDescription(t *testing.T) {
