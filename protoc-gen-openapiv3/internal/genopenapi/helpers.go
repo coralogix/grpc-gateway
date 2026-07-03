@@ -40,12 +40,12 @@ func toPascalCase(s string) string {
 	for _, r := range s {
 		if r == '_' || r == '.' || r == '-' {
 			capitalizeNext = true
-			continue // Skip the underscore itself
+			continue
 		}
 
 		if capitalizeNext {
 			builder.WriteRune(unicode.ToUpper(r))
-			capitalizeNext = false // Reset the flag
+			capitalizeNext = false
 		} else {
 			builder.WriteRune(r)
 		}

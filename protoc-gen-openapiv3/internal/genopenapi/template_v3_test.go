@@ -3,7 +3,6 @@ package genopenapi
 import (
 	"encoding/json"
 	"fmt"
-	"log"
 	"slices"
 	"sort"
 	"strings"
@@ -11,6 +10,7 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
+	"google.golang.org/genproto/googleapis/api/visibility"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
@@ -29,310 +29,587 @@ func (f *MockField) GetName() string {
 	return f.Name
 }
 
-func Test_generateOneOfCombinations2(t *testing.T) {
-	t.Run("MultipleOneOfGroupsWithDifferentVariantNumbers", func(t *testing.T) {
-		oneofGroups := map[string][]*descriptor.Field{
-			"oneof_group_A": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_A1")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_A2")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_A3")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_A4")}},
-			},
-			"oneof_group_B": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_B1")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_B2")}},
-			},
-			"oneof_group_C": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_C1")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_C2")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("field_C3")}},
-			},
-		}
-
-		result := generateOneOfCombinations(oneofGroups, "TestMessage")
-		log.Printf("Result: %+v", result)
-
-		if len(result) != 24 {
-			t.Fatalf("Expected 4 combinations, got %d", len(result))
-		}
-
-	})
-
-	t.Run("CollisionWithExistingTypeName", func(t *testing.T) {
-		// This tests the scenario where a oneOf field name + message name creates a collision
-		// with an existing type name.
-		// E.g., message ColorsBy with field ColorsByAggregation aggregation would generate
-		// "ColorsByAggregation" as the combination name, colliding with the actual nested message type.
-		oneofGroups := map[string][]*descriptor.Field{
-			"value": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("stack")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("aggregation")}},
-			},
-		}
-
-		// Simulate existing type names that could collide
-		resolvedNames := map[string]string{
-			".example.ColorsBy.ColorsByAggregation": "ColorsByAggregation",
-			".example.ColorsBy.ColorsByStack":       "ColorsByStack",
-		}
-
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "ColorsBy", resolvedNames)
-
-		if len(result) != 2 {
-			t.Fatalf("Expected 2 combinations, got %d", len(result))
-		}
-
-		// Check that the collision is avoided by adding "Variant" suffix
-		if _, ok := result["ColorsByAggregationVariant"]; !ok {
-			t.Errorf("Expected 'ColorsByAggregationVariant' to exist due to collision avoidance, got keys: %v", result)
-		}
-		if _, ok := result["ColorsByStackVariant"]; !ok {
-			t.Errorf("Expected 'ColorsByStackVariant' to exist due to collision avoidance, got keys: %v", result)
-		}
-		// Ensure the original colliding names are NOT used
-		if _, ok := result["ColorsByAggregation"]; ok {
-			t.Errorf("Expected 'ColorsByAggregation' to NOT exist (should be renamed to avoid collision), got keys: %v", result)
-		}
-		if _, ok := result["ColorsByStack"]; ok {
-			t.Errorf("Expected 'ColorsByStack' to NOT exist (should be renamed to avoid collision), got keys: %v", result)
-		}
-	})
-
-	t.Run("NoCollision_NoVariantSuffix", func(t *testing.T) {
-		// When there's no collision, the Variant suffix should NOT be added
-		oneofGroups := map[string][]*descriptor.Field{
-			"value": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("foo")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("bar")}},
-			},
-		}
-
-		// No colliding names - these don't match the generated combination names
-		resolvedNames := map[string]string{
-			".example.SomeOtherType": "SomeOtherType",
-		}
-
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "MyMessage", resolvedNames)
-
-		if len(result) != 2 {
-			t.Fatalf("Expected 2 combinations, got %d", len(result))
-		}
-
-		// Check that no "Variant" suffix is added when there's no collision
-		if _, ok := result["MyMessageFoo"]; !ok {
-			t.Errorf("Expected 'MyMessageFoo' to exist (no collision, no Variant suffix), got keys: %v", result)
-		}
-		if _, ok := result["MyMessageBar"]; !ok {
-			t.Errorf("Expected 'MyMessageBar' to exist (no collision, no Variant suffix), got keys: %v", result)
-		}
-		// Ensure Variant suffix is NOT added
-		if _, ok := result["MyMessageFooVariant"]; ok {
-			t.Errorf("Expected 'MyMessageFooVariant' to NOT exist (no collision should mean no Variant suffix), got keys: %v", result)
-		}
-		if _, ok := result["MyMessageBarVariant"]; ok {
-			t.Errorf("Expected 'MyMessageBarVariant' to NOT exist (no collision should mean no Variant suffix), got keys: %v", result)
-		}
-	})
-
-	t.Run("PartialCollision_OnlyCollidingGetsVariant", func(t *testing.T) {
-		// When only some combinations collide, only those should get the Variant suffix
-		oneofGroups := map[string][]*descriptor.Field{
-			"value": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("collides")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("no_collision")}},
-			},
-		}
-
-		// Only one name collides
-		resolvedNames := map[string]string{
-			".example.Msg.MsgCollides": "MsgCollides", // This collides with "Msg_collides" -> "MsgCollides"
-		}
-
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Msg", resolvedNames)
-
-		if len(result) != 2 {
-			t.Fatalf("Expected 2 combinations, got %d", len(result))
-		}
-
-		// The colliding name should get Variant suffix
-		if _, ok := result["MsgCollidesVariant"]; !ok {
-			t.Errorf("Expected 'MsgCollidesVariant' to exist due to collision, got keys: %v", result)
-		}
-		// The non-colliding name should NOT get Variant suffix
-		if _, ok := result["MsgNoCollision"]; !ok {
-			t.Errorf("Expected 'MsgNoCollision' to exist (no collision, no Variant), got keys: %v", result)
-		}
-		// Ensure the original colliding name is not used
-		if _, ok := result["MsgCollides"]; ok {
-			t.Errorf("Expected 'MsgCollides' to NOT exist, got keys: %v", result)
-		}
-	})
-
-	t.Run("EmptyResolvedNames_NoVariantSuffix", func(t *testing.T) {
-		// With empty resolvedNames, there can be no collisions
-		oneofGroups := map[string][]*descriptor.Field{
-			"value": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("alpha")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("beta")}},
-			},
-		}
-
-		resolvedNames := map[string]string{}
-
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", resolvedNames)
-
-		if len(result) != 2 {
-			t.Fatalf("Expected 2 combinations, got %d", len(result))
-		}
-
-		if _, ok := result["TestAlpha"]; !ok {
-			t.Errorf("Expected 'TestAlpha' to exist, got keys: %v", result)
-		}
-		if _, ok := result["TestBeta"]; !ok {
-			t.Errorf("Expected 'TestBeta' to exist, got keys: %v", result)
-		}
-	})
-
-	t.Run("NilResolvedNames_NoVariantSuffix", func(t *testing.T) {
-		// With nil resolvedNames (backward compatibility), there should be no collisions
-		oneofGroups := map[string][]*descriptor.Field{
-			"value": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("gamma")}},
-			},
-		}
-
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Test", nil)
-
-		if len(result) != 1 {
-			t.Fatalf("Expected 1 combination, got %d", len(result))
-		}
-
-		if _, ok := result["TestGamma"]; !ok {
-			t.Errorf("Expected 'TestGamma' to exist, got keys: %v", result)
-		}
-	})
-
-	t.Run("CollisionWithDottedTypeName", func(t *testing.T) {
-		// This tests collision detection when resolved names contain dots.
-		// E.g., "Annotation.WidgetScope.SpecificWidgets" should collide with
-		// "AnnotationWidgetScopeSpecificWidgets" because some code generators
-		// strip dots when comparing names.
-		oneofGroups := map[string][]*descriptor.Field{
-			"value": {
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("specific_widgets")}},
-				{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("all_widgets")}},
-			},
-		}
-
-		// The resolved name has dots, but when converted to PascalCase it would
-		// collide with the generated combination name
-		resolvedNames := map[string]string{
-			".example.Annotation.WidgetScope.SpecificWidgets": "Annotation.WidgetScope.SpecificWidgets",
-		}
-
-		result := generateOneOfCombinationsWithResolvedNames(oneofGroups, "Annotation.WidgetScope", resolvedNames)
-
-		if len(result) != 2 {
-			t.Fatalf("Expected 2 combinations, got %d", len(result))
-		}
-
-		// The colliding name should get Variant suffix
-		// "Annotation.WidgetScope_specific_widgets" -> "AnnotationWidgetScopeSpecificWidgets"
-		// which collides with toPascalCase("Annotation.WidgetScope.SpecificWidgets") = "AnnotationWidgetScopeSpecificWidgets"
-		if _, ok := result["AnnotationWidgetScopeSpecificWidgetsVariant"]; !ok {
-			t.Errorf("Expected 'AnnotationWidgetScopeSpecificWidgetsVariant' to exist due to collision with dotted type name, got keys: %v", result)
-		}
-		// The non-colliding name should NOT get Variant suffix
-		if _, ok := result["AnnotationWidgetScopeAllWidgets"]; !ok {
-			t.Errorf("Expected 'AnnotationWidgetScopeAllWidgets' to exist (no collision), got keys: %v", result)
-		}
-		// Ensure the colliding name without Variant is not used
-		if _, ok := result["AnnotationWidgetScopeSpecificWidgets"]; ok {
-			t.Errorf("Expected 'AnnotationWidgetScopeSpecificWidgets' to NOT exist (should be renamed), got keys: %v", result)
-		}
-	})
-}
-
-func TestApplyInferredDiscriminatorFields(t *testing.T) {
-	t.Run("single unique field", func(t *testing.T) {
-		schemas := map[string]*OpenAPIV3SchemaRef{
-			"LogRulesVariant": {
-				OpenAPIV3Schema: &OpenAPIV3Schema{
-					Properties: map[string]*OpenAPIV3SchemaRef{
-						"name":     {},
-						"priority": {},
-						"logRules": {},
-					},
-					Required: []string{"name", "priority"},
-				},
-			},
-			"SpanRulesVariant": {
-				OpenAPIV3Schema: &OpenAPIV3Schema{
-					Properties: map[string]*OpenAPIV3SchemaRef{
-						"name":      {},
-						"priority":  {},
-						"spanRules": {},
-					},
-					Required: []string{"name", "priority"},
-				},
-			},
-		}
-
-		applyInferredDiscriminatorFields(schemas)
-
-		if got := schemas["LogRulesVariant"].Required; !slices.Equal(got, []string{"name", "priority", "logRules"}) {
-			t.Fatalf("LogRulesVariant required fields = %v, want %v", got, []string{"name", "priority", "logRules"})
-		}
-		if got := schemas["SpanRulesVariant"].Required; !slices.Equal(got, []string{"name", "priority", "spanRules"}) {
-			t.Fatalf("SpanRulesVariant required fields = %v, want %v", got, []string{"name", "priority", "spanRules"})
-		}
-	})
-
-	t.Run("combo-only discriminator", func(t *testing.T) {
-		schemas := map[string]*OpenAPIV3SchemaRef{
-			"AlphaXray":   {OpenAPIV3Schema: schemaWithProperties("common", "alpha", "xray")},
-			"AlphaYankee": {OpenAPIV3Schema: schemaWithProperties("common", "alpha", "yankee")},
-			"BetaXray":    {OpenAPIV3Schema: schemaWithProperties("common", "beta", "xray")},
-			"BetaYankee":  {OpenAPIV3Schema: schemaWithProperties("common", "beta", "yankee")},
-		}
-
-		applyInferredDiscriminatorFields(schemas)
-
-		assertRequiredFields(t, schemas["AlphaXray"].Required, []string{"alpha", "xray"})
-		assertRequiredFields(t, schemas["AlphaYankee"].Required, []string{"alpha", "yankee"})
-		assertRequiredFields(t, schemas["BetaXray"].Required, []string{"beta", "xray"})
-		assertRequiredFields(t, schemas["BetaYankee"].Required, []string{"beta", "yankee"})
-	})
-
-	t.Run("impossible discriminator leaves schemas unchanged", func(t *testing.T) {
-		schemas := map[string]*OpenAPIV3SchemaRef{
-			"Left":  {OpenAPIV3Schema: schemaWithProperties("common", "value")},
-			"Right": {OpenAPIV3Schema: schemaWithProperties("common", "value")},
-		}
-
-		applyInferredDiscriminatorFields(schemas)
-
-		if len(schemas["Left"].Required) != 0 {
-			t.Fatalf("Left required fields = %v, want unchanged empty slice", schemas["Left"].Required)
-		}
-		if len(schemas["Right"].Required) != 0 {
-			t.Fatalf("Right required fields = %v, want unchanged empty slice", schemas["Right"].Required)
-		}
-	})
-}
-
-func schemaWithProperties(propertyNames ...string) *OpenAPIV3Schema {
-	properties := make(map[string]*OpenAPIV3SchemaRef, len(propertyNames))
-	for _, propertyName := range propertyNames {
-		properties[propertyName] = &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{}}
-	}
-	return &OpenAPIV3Schema{Properties: properties}
+func testOneOfField(name string) *descriptor.Field {
+	return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+		Name: proto.String(name),
+	}}
 }
 
 func assertRequiredFields(t *testing.T, got []string, want []string) {
 	t.Helper()
 	if !slices.Equal(got, want) {
 		t.Fatalf("required fields = %v, want %v", got, want)
+	}
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_IndependentOneOfGroups(t *testing.T) {
+	msg := newIndependentOneOfDashboardFixture(t, []string{"name", "layout"})
+
+	schema, componentSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Dashboard"}, descriptor.NewRegistry())
+
+	if len(componentSchemas) != 0 {
+		t.Fatalf("independent oneof groups should not emit Cartesian component variants, got %d", len(componentSchemas))
+	}
+	if len(schema.OneOf) != 0 {
+		t.Fatalf("dashboard should be one object schema, got %d top-level oneOf variants", len(schema.OneOf))
+	}
+	assertRequiredFields(t, schema.Required, []string{"name", "layout"})
+	assertProperties(t, schema.Properties, []string{"name", "layout", "off", "one_minute", "absolute_time_frame", "relative_time_frame"})
+	assertOneOfGroupConstraint(t, schema.AllOf[0], []string{"off", "one_minute"}, true)
+	assertOneOfGroupConstraint(t, schema.AllOf[1], []string{"absolute_time_frame", "relative_time_frame"}, true)
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_RequiredIndependentOneOfGroups(t *testing.T) {
+	msg := newIndependentOneOfDashboardFixture(t, []string{"name", "layout", "auto_refresh", "time_frame"})
+
+	schema, componentSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Dashboard"}, descriptor.NewRegistry())
+
+	if len(componentSchemas) != 0 {
+		t.Fatalf("independent oneof groups should not emit Cartesian component variants, got %d", len(componentSchemas))
+	}
+	assertRequiredFields(t, schema.Required, []string{"name", "layout"})
+	assertOneOfGroupConstraint(t, schema.AllOf[0], []string{"off", "one_minute"}, false)
+	assertOneOfGroupConstraint(t, schema.AllOf[1], []string{"absolute_time_frame", "relative_time_frame"}, false)
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_RequiredIndependentOneOfGroupsJSONNames(t *testing.T) {
+	msg := newIndependentOneOfDashboardFixture(t, []string{"name", "layout", "autoRefresh", "timeFrame"})
+
+	schema, componentSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Dashboard"}, descriptor.NewRegistry())
+
+	if len(componentSchemas) != 0 {
+		t.Fatalf("independent oneof groups should not emit Cartesian component variants, got %d", len(componentSchemas))
+	}
+	assertRequiredFields(t, schema.Required, []string{"name", "layout"})
+	assertOneOfGroupConstraint(t, schema.AllOf[0], []string{"off", "one_minute"}, false)
+	assertOneOfGroupConstraint(t, schema.AllOf[1], []string{"absolute_time_frame", "relative_time_frame"}, false)
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_SingleIndependentOneOfGroupUsesTopLevelOneOf(t *testing.T) {
+	msg := newSingleIndependentOneOfFixture(t, []string{"name"})
+
+	schema, componentSchemas := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Rule"}, descriptor.NewRegistry())
+
+	if len(componentSchemas) != 0 {
+		t.Fatalf("independent oneof groups should not emit Cartesian component variants, got %d", len(componentSchemas))
+	}
+	assertRequiredFields(t, schema.Required, []string{"name"})
+	assertProperties(t, schema.Properties, []string{"name", "log_rules", "span_rules"})
+	if len(schema.AllOf) != 0 {
+		t.Fatalf("single independent oneof group should not be wrapped in allOf, got %d entries", len(schema.AllOf))
+	}
+	assertOneOfGroupConstraint(t, &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{OneOf: schema.OneOf}}, []string{"log_rules", "span_rules"}, true)
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorDropsSyntheticMappings(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "kind",
+		Mapping: map[string]string{
+			"alpha": "#/components/schemas/ExampleAlpha",
+			"beta":  "#/components/schemas/ExampleBeta",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "Example", map[string][]*descriptor.Field{
+		"choice": {
+			testOneOfField("alpha"),
+			testOneOfField("beta"),
+		},
+	}, nil)
+
+	if got != nil {
+		t.Fatalf("discriminator = %v, want nil after dropping synthetic mappings", got)
+	}
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorPreservesRealMappings(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "kind",
+		Mapping: map[string]string{
+			"alpha": "#/components/schemas/ExampleAlpha",
+			"other": "#/components/schemas/OtherSchema",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "Example", map[string][]*descriptor.Field{
+		"choice": {
+			testOneOfField("alpha"),
+		},
+	}, nil)
+
+	if got == nil {
+		t.Fatal("discriminator = nil, want remaining real mapping")
+	}
+	if len(got.Mapping) != 2 ||
+		got.Mapping["alpha"] != "#/components/schemas/ExampleAlpha" ||
+		got.Mapping["other"] != "#/components/schemas/OtherSchema" {
+		t.Fatalf("mapping = %v, want alpha and other mappings to remain", got.Mapping)
+	}
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorDropsBareSyntheticMapping(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "kind",
+		Mapping: map[string]string{
+			"alpha": "ExampleAlpha",
+			"other": "OtherSchema",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "Example", map[string][]*descriptor.Field{
+		"choice": {
+			testOneOfField("alpha"),
+			testOneOfField("beta"),
+		},
+	}, nil)
+
+	if got == nil {
+		t.Fatal("discriminator = nil, want remaining real mapping")
+	}
+	if len(got.Mapping) != 1 || got.Mapping["other"] != "OtherSchema" {
+		t.Fatalf("mapping = %v, want only other -> OtherSchema", got.Mapping)
+	}
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorPreservesPrefixedRealMapping(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "kind",
+		Mapping: map[string]string{
+			"alpha": "#/components/schemas/ExampleAlpha",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "Example", map[string][]*descriptor.Field{
+		"choice": {
+			testOneOfField("beta"),
+		},
+	}, nil)
+
+	if got == nil {
+		t.Fatal("discriminator = nil, want prefixed non-synthetic mapping to be preserved")
+	}
+	if len(got.Mapping) != 1 || got.Mapping["alpha"] != "#/components/schemas/ExampleAlpha" {
+		t.Fatalf("mapping = %v, want alpha -> #/components/schemas/ExampleAlpha", got.Mapping)
+	}
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorDropsCartesianSyntheticMapping(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "kind",
+		Mapping: map[string]string{
+			"dashboard": "#/components/schemas/DashboardOffRelativeTimeFrame",
+			"other":     "#/components/schemas/OtherSchema",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "Dashboard", map[string][]*descriptor.Field{
+		"auto_refresh": {
+			testOneOfField("off"),
+			testOneOfField("five_minutes"),
+		},
+		"time_frame": {
+			testOneOfField("absolute_time_frame"),
+			testOneOfField("relative_time_frame"),
+		},
+	}, nil)
+
+	if got == nil {
+		t.Fatal("discriminator = nil, want remaining real mapping")
+	}
+	if len(got.Mapping) != 1 || got.Mapping["other"] != "#/components/schemas/OtherSchema" {
+		t.Fatalf("mapping = %v, want only other -> #/components/schemas/OtherSchema", got.Mapping)
+	}
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorDropsDottedSyntheticMapping(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "kind",
+		Mapping: map[string]string{
+			"alpha": "#/components/schemas/BCAlpha",
+			"other": "#/components/schemas/OtherSchema",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "B.C", map[string][]*descriptor.Field{
+		"choice": {
+			testOneOfField("alpha"),
+			testOneOfField("beta"),
+		},
+	}, nil)
+
+	if got == nil {
+		t.Fatal("discriminator = nil, want remaining real mapping")
+	}
+	if len(got.Mapping) != 1 || got.Mapping["other"] != "#/components/schemas/OtherSchema" {
+		t.Fatalf("mapping = %v, want only other -> #/components/schemas/OtherSchema", got.Mapping)
+	}
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorDropsCollidedSyntheticMapping(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "kind",
+		Mapping: map[string]string{
+			"real":      "#/components/schemas/ColorsByAggregation",
+			"synthetic": "#/components/schemas/ColorsByAggregationVariant",
+			"other":     "#/components/schemas/OtherSchema",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "Colors", map[string][]*descriptor.Field{
+		"choice": {
+			testOneOfField("by_aggregation"),
+			testOneOfField("by_query"),
+		},
+	}, map[string]string{
+		".test.ColorsByAggregation": "ColorsByAggregation",
+	})
+
+	if got == nil {
+		t.Fatal("discriminator = nil, want real mappings to remain")
+	}
+	if len(got.Mapping) != 2 ||
+		got.Mapping["real"] != "#/components/schemas/ColorsByAggregation" ||
+		got.Mapping["other"] != "#/components/schemas/OtherSchema" {
+		t.Fatalf("mapping = %v, want real and other mappings to remain", got.Mapping)
+	}
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorIgnoresOneArmGroupsInLegacyName(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "kind",
+		Mapping: map[string]string{
+			"variant": "#/components/schemas/ThingVariantA",
+			"other":   "#/components/schemas/OtherSchema",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "Thing", map[string][]*descriptor.Field{
+		"created_at": {
+			testOneOfField("created_at"),
+		},
+		"variant": {
+			testOneOfField("variant_a"),
+			testOneOfField("variant_b"),
+		},
+	}, nil)
+
+	if got == nil {
+		t.Fatal("discriminator = nil, want remaining real mapping")
+	}
+	if len(got.Mapping) != 1 || got.Mapping["other"] != "#/components/schemas/OtherSchema" {
+		t.Fatalf("mapping = %v, want only other -> #/components/schemas/OtherSchema", got.Mapping)
+	}
+}
+
+func TestBuildOpenAPIV3SchemaFromMessage_SanitizesDiscriminatorUsingOriginalOneOfGroups(t *testing.T) {
+	var zero int32
+	fieldType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	hiddenFieldOptions := &descriptorpb.FieldOptions{}
+	proto.SetExtension(hiddenFieldOptions, visibility.E_FieldVisibility, &visibility.VisibilityRule{Restriction: "INTERNAL"})
+
+	msgOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+		Discriminator: &options.Discriminator{
+			PropertyName: "kind",
+			Mapping: map[string]string{
+				"visible": "#/components/schemas/ThingVisibleArm",
+			},
+		},
+	})
+
+	msg := descriptorMessageFromProto(&descriptorpb.DescriptorProto{
+		Name: proto.String("Thing"),
+		OneofDecl: []*descriptorpb.OneofDescriptorProto{
+			{Name: proto.String("variant")},
+		},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:       proto.String("visible_arm"),
+				Number:     proto.Int32(1),
+				Label:      &label,
+				Type:       &fieldType,
+				OneofIndex: &zero,
+			},
+			{
+				Name:       proto.String("hidden_arm"),
+				Number:     proto.Int32(2),
+				Label:      &label,
+				Type:       &fieldType,
+				OneofIndex: &zero,
+				Options:    hiddenFieldOptions,
+			},
+		},
+		Options: msgOptions,
+	})
+
+	schema := buildOpenAPIV3SchemaFromMessageWithReferences(msg, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Thing"})
+
+	if schema.Discriminator != nil {
+		t.Fatalf("discriminator = %v, want nil after dropping old synthetic mapping", schema.Discriminator)
+	}
+	assertProperties(t, schema.Properties, []string{"visible_arm"})
+}
+
+func TestBuildRequestBody_IndependentOneOfGroups(t *testing.T) {
+	msg := newIndependentOneOfDashboardFixture(t, []string{"name", "layout"})
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("CreateDashboard"),
+			InputType:  proto.String(".test.Dashboard"),
+			OutputType: proto.String(".test.Dashboard"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Body:       &descriptor.Body{},
+		Method:     method,
+	}
+
+	body, componentSchemas := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Dashboard"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if len(componentSchemas) != 0 {
+		t.Fatalf("independent request body should not emit Cartesian component variants, got %d", len(componentSchemas))
+	}
+	if !body.Required {
+		t.Fatal("normal required fields should make requestBody.required=true")
+	}
+
+	bodySchema := body.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema
+	assertRequiredFields(t, bodySchema.Required, []string{"name", "layout"})
+	assertOneOfGroupConstraint(t, bodySchema.AllOf[0], []string{"off", "one_minute"}, true)
+	assertOneOfGroupConstraint(t, bodySchema.AllOf[1], []string{"absolute_time_frame", "relative_time_frame"}, true)
+}
+
+func TestBuildRequestBody_RequiredSetWhenBodyHasIndependentOneOfGroups(t *testing.T) {
+	msg := newIndependentOneOfDashboardFixture(t, nil)
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("UpdateDashboard"),
+			InputType:  proto.String(".test.Dashboard"),
+			OutputType: proto.String(".test.Dashboard"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Body:       &descriptor.Body{},
+		Method:     method,
+	}
+
+	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Dashboard"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if !body.Required {
+		t.Fatal("body-bound independent oneof groups should preserve requestBody.required=true")
+	}
+}
+
+func TestBuildRequestBody_PathSelectedIndependentOneOfGroup(t *testing.T) {
+	msg := newSingleIndependentOneOfFixture(t, []string{"name"})
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("UpdateRuleByLogRules"),
+			InputType:  proto.String(".test.Rule"),
+			OutputType: proto.String(".test.Rule"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+
+	logRulesField := msg.Fields[1]
+	binding := &descriptor.Binding{
+		HTTPMethod: "PATCH",
+		Body:       &descriptor.Body{},
+		Method:     method,
+		PathParams: []descriptor.Parameter{{
+			FieldPath: descriptor.FieldPath{{Name: "log_rules", Target: logRulesField}},
+			Target:    logRulesField,
+			Method:    method,
+		}},
+	}
+
+	body, componentSchemas := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Rule"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if len(componentSchemas) != 0 {
+		t.Fatalf("path-selected oneof body should not emit component variants, got %d", len(componentSchemas))
+	}
+
+	bodySchema := body.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema
+	if _, ok := bodySchema.Properties["log_rules"]; ok {
+		t.Fatal("path-selected oneof field should not remain as a body property")
+	}
+	assertProperties(t, bodySchema.Properties, []string{"name", "span_rules"})
+	assertRequiredFields(t, bodySchema.Required, []string{"name"})
+	assertForbiddenFields(t, bodySchema, []string{"span_rules"})
+}
+
+func newIndependentOneOfDashboardFixture(t *testing.T, required []string) *descriptor.Message {
+	t.Helper()
+
+	fieldType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	oneOfIndex := func(i int32) *int32 { return &i }
+	field := func(name string, number int32, oneofIndex *int32) *descriptor.Field {
+		return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:       proto.String(name),
+			Number:     proto.Int32(number),
+			Label:      &label,
+			Type:       &fieldType,
+			OneofIndex: oneofIndex,
+		}}
+	}
+
+	msgOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+		JsonSchema: &options.JSONSchema{Required: required},
+	})
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("Dashboard"),
+		OneofDecl: []*descriptorpb.OneofDescriptorProto{
+			{Name: proto.String("auto_refresh")},
+			{Name: proto.String("time_frame")},
+		},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			field("name", 1, nil).FieldDescriptorProto,
+			field("layout", 2, nil).FieldDescriptorProto,
+			field("off", 3, oneOfIndex(0)).FieldDescriptorProto,
+			field("one_minute", 4, oneOfIndex(0)).FieldDescriptorProto,
+			field("relative_time_frame", 5, oneOfIndex(1)).FieldDescriptorProto,
+			field("absolute_time_frame", 6, oneOfIndex(1)).FieldDescriptorProto,
+		},
+		Options: msgOptions,
+	}
+
+	return descriptorMessageFromProto(msgDesc)
+}
+
+func newSingleIndependentOneOfFixture(t *testing.T, required []string) *descriptor.Message {
+	t.Helper()
+
+	var zero int32
+	fieldType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	label := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	field := func(name string, number int32, oneofIndex *int32) *descriptor.Field {
+		return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:       proto.String(name),
+			Number:     proto.Int32(number),
+			Label:      &label,
+			Type:       &fieldType,
+			OneofIndex: oneofIndex,
+		}}
+	}
+
+	msgOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+		JsonSchema: &options.JSONSchema{Required: required},
+	})
+
+	msgDesc := &descriptorpb.DescriptorProto{
+		Name: proto.String("Rule"),
+		OneofDecl: []*descriptorpb.OneofDescriptorProto{
+			{Name: proto.String("rules")},
+		},
+		Field: []*descriptorpb.FieldDescriptorProto{
+			field("name", 1, nil).FieldDescriptorProto,
+			field("log_rules", 2, &zero).FieldDescriptorProto,
+			field("span_rules", 3, &zero).FieldDescriptorProto,
+		},
+		Options: msgOptions,
+	}
+
+	return descriptorMessageFromProto(msgDesc)
+}
+
+func descriptorMessageFromProto(msgDesc *descriptorpb.DescriptorProto) *descriptor.Message {
+	file := &descriptor.File{FileDescriptorProto: &descriptorpb.FileDescriptorProto{
+		Package: proto.String("test"),
+	}}
+	msg := &descriptor.Message{DescriptorProto: msgDesc, File: file}
+	for _, fieldDescriptor := range msgDesc.Field {
+		msg.Fields = append(msg.Fields, &descriptor.Field{FieldDescriptorProto: fieldDescriptor, Message: msg})
+	}
+	return msg
+}
+
+func assertProperties(t *testing.T, properties map[string]*OpenAPIV3SchemaRef, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(properties))
+	for propertyName := range properties {
+		got = append(got, propertyName)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("properties = %v, want %v", got, want)
+	}
+}
+
+func assertOneOfGroupConstraint(t *testing.T, schemaRef *OpenAPIV3SchemaRef, wantRequiredBranches []string, wantUnset bool) {
+	t.Helper()
+	if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil {
+		t.Fatal("expected oneof group schema")
+	}
+	gotRequiredBranches := []string{}
+	gotUnset := false
+	for _, branchRef := range schemaRef.OpenAPIV3Schema.OneOf {
+		if branchRef == nil || branchRef.OpenAPIV3Schema == nil {
+			continue
+		}
+		if branchRef.OpenAPIV3Schema.Type != "object" {
+			t.Fatalf("oneof branch type = %q, want object", branchRef.OpenAPIV3Schema.Type)
+		}
+		if len(branchRef.OpenAPIV3Schema.Required) > 0 {
+			gotRequiredBranches = append(gotRequiredBranches, branchRef.OpenAPIV3Schema.Required...)
+		}
+		if branchRef.OpenAPIV3Schema.Not != nil {
+			gotUnset = true
+			notSchema := branchRef.OpenAPIV3Schema.Not.OpenAPIV3Schema
+			if notSchema == nil {
+				t.Fatal("oneof unset branch not schema is nil")
+			}
+			for _, absentRef := range notSchema.AnyOf {
+				if absentRef == nil || absentRef.OpenAPIV3Schema == nil {
+					continue
+				}
+				if absentRef.OpenAPIV3Schema.Type != "object" {
+					t.Fatalf("oneof unset absent-field branch type = %q, want object", absentRef.OpenAPIV3Schema.Type)
+				}
+			}
+		}
+	}
+	sort.Strings(gotRequiredBranches)
+	sort.Strings(wantRequiredBranches)
+	if !slices.Equal(gotRequiredBranches, wantRequiredBranches) {
+		t.Fatalf("oneof required branches = %v, want %v", gotRequiredBranches, wantRequiredBranches)
+	}
+	if gotUnset != wantUnset {
+		t.Fatalf("oneof unset branch = %v, want %v", gotUnset, wantUnset)
+	}
+}
+
+func assertForbiddenFields(t *testing.T, schema *OpenAPIV3Schema, want []string) {
+	t.Helper()
+	got := make([]string, 0, len(schema.AllOf))
+	for _, schemaRef := range schema.AllOf {
+		if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil || schemaRef.OpenAPIV3Schema.Not == nil || schemaRef.OpenAPIV3Schema.Not.OpenAPIV3Schema == nil {
+			continue
+		}
+		got = append(got, schemaRef.OpenAPIV3Schema.Not.OpenAPIV3Schema.Required...)
+	}
+	sort.Strings(got)
+	sort.Strings(want)
+	if !slices.Equal(got, want) {
+		t.Fatalf("forbidden fields = %v, want %v", got, want)
 	}
 }
 
@@ -955,6 +1232,12 @@ func TestFilterRequired(t *testing.T) {
 			bodyProperties: prop("id"),
 			want:           []string{"id"},
 		},
+		{
+			name:           "json camelCase required name matches proto property name",
+			required:       []string{"fooBar"},
+			bodyProperties: prop("foo_bar"),
+			want:           []string{"fooBar"},
+		},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -982,52 +1265,6 @@ func TestBuildSchemaFromFields_EmptyMessage_AdditionalPropertiesFalse(t *testing
 	}
 	if schema.AdditionalProperties != false {
 		t.Errorf("expected additionalProperties=false for empty message, got %v", schema.AdditionalProperties)
-	}
-}
-
-// TestOneOfCombinationsStableOrder verifies that iterating the combinations map and
-// sorting produces a deterministic order regardless of Go's map randomisation.
-func TestOneOfCombinationsStableOrder(t *testing.T) {
-	// Two oneof groups, two variants each → 4 CartesianProduct combinations.
-	oneofGroups := map[string][]*descriptor.Field{
-		"kind": {
-			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("alpha")}},
-			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("beta")}},
-		},
-		"mode": {
-			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("fast")}},
-			{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{Name: proto.String("slow")}},
-		},
-	}
-
-	// Simulate what the fixed code does: collect names, sort, build slice.
-	collectSorted := func() []string {
-		combinations := generateOneOfCombinations(oneofGroups, "Msg")
-		names := make([]string, 0, len(combinations))
-		for name := range combinations {
-			names = append(names, name)
-		}
-		sort.Strings(names)
-		return names
-	}
-
-	first := collectSorted()
-	if len(first) != 4 {
-		t.Fatalf("expected 4 combinations, got %d", len(first))
-	}
-
-	// Run many times; all must produce the same order.
-	for i := 0; i < 100; i++ {
-		got := collectSorted()
-		if !slices.Equal(got, first) {
-			t.Fatalf("iteration %d produced different order:\n  want %v\n   got %v", i, first, got)
-		}
-	}
-
-	// Verify the expected names (proto field names, sorted alphabetically by combination name).
-	want := []string{"MsgAlphaFast", "MsgAlphaSlow", "MsgBetaFast", "MsgBetaSlow"}
-	if !slices.Equal(first, want) {
-		t.Errorf("unexpected combination names:\n  want %v\n   got %v", want, first)
 	}
 }
 
