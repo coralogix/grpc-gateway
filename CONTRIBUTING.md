@@ -4,6 +4,23 @@
 
 All submissions, including submissions by project members, require review.
 
+## Commit hooks
+
+This repository uses [pre-commit](https://pre-commit.com/) for local commit hooks, including Gitleaks secret scanning.
+To enable the hooks locally, run from the repo root:
+
+```sh
+$ pre-commit install
+```
+
+To test the Gitleaks hook manually:
+
+```sh
+$ pre-commit run gitleaks --all-files
+```
+
+If needed, bypass with `SKIP=gitleaks git commit ...` or `git commit --no-verify`.
+
 ## I want to regenerate the files after making changes
 
 ### Using Docker
