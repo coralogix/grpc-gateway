@@ -411,6 +411,40 @@ func TestBuildRequestBody_RequiredSetWhenBodyHasIndependentOneOfGroups(t *testin
 	}
 }
 
+func TestBuildRequestBody_RequiredSetWhenBodyHasSingleIndependentOneOfGroup(t *testing.T) {
+	msg := newSingleIndependentOneOfFixture(t, nil)
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("UpdateRule"),
+			InputType:  proto.String(".test.Rule"),
+			OutputType: proto.String(".test.Rule"),
+		},
+		RequestType:  msg,
+		ResponseType: msg,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Body:       &descriptor.Body{},
+		Method:     method,
+	}
+
+	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Rule"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if !body.Required {
+		t.Fatal("body-bound single independent oneof group should preserve requestBody.required=true")
+	}
+
+	bodySchema := body.OpenAPIV3RequestBody.Content["application/json"].Schema.OpenAPIV3Schema
+	if len(bodySchema.OneOf) == 0 {
+		t.Fatal("single independent oneof group should be emitted as top-level oneOf")
+	}
+	if len(bodySchema.AllOf) != 0 {
+		t.Fatalf("single independent oneof group should not be wrapped in allOf, got %d entries", len(bodySchema.AllOf))
+	}
+}
+
 func TestBuildRequestBody_PathSelectedIndependentOneOfGroup(t *testing.T) {
 	msg := newSingleIndependentOneOfFixture(t, []string{"name"})
 	method := &descriptor.Method{

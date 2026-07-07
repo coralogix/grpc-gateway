@@ -1712,6 +1712,9 @@ func schemaRequiresJSONBody(schema *OpenAPIV3Schema) bool {
 	if len(schema.Required) > 0 {
 		return true
 	}
+	if len(schema.OneOf) > 0 {
+		return true
+	}
 	for _, schemaRef := range schema.AllOf {
 		if schemaRef != nil && schemaRef.OpenAPIV3Schema != nil && len(schemaRef.OpenAPIV3Schema.OneOf) > 0 {
 			return true
