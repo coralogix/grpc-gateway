@@ -101,7 +101,7 @@ func TestBuildOpenAPIV3SchemaFromMessage_SingleIndependentOneOfGroupUsesTopLevel
 	assertOneOfGroupConstraint(t, &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{OneOf: schema.OneOf}}, []string{"log_rules", "span_rules"}, true)
 }
 
-func TestSanitizeIndependentOneOfDiscriminatorDropsSyntheticMappings(t *testing.T) {
+func TestSanitizeIndependentOneOfDiscriminatorDropsSyntheticMappingsButKeepsPropertyName(t *testing.T) {
 	discriminator := &OpenAPIV3Discriminator{
 		PropertyName: "kind",
 		Mapping: map[string]string{
@@ -117,8 +117,14 @@ func TestSanitizeIndependentOneOfDiscriminatorDropsSyntheticMappings(t *testing.
 		},
 	}, nil)
 
-	if got != nil {
-		t.Fatalf("discriminator = %v, want nil after dropping synthetic mappings", got)
+	if got == nil {
+		t.Fatal("discriminator = nil, want propertyName preserved after dropping synthetic mappings")
+	}
+	if got.PropertyName != "kind" {
+		t.Fatalf("propertyName = %q, want kind", got.PropertyName)
+	}
+	if len(got.Mapping) != 0 {
+		t.Fatalf("mapping = %v, want empty mapping after dropping synthetic mappings", got.Mapping)
 	}
 }
 
@@ -345,8 +351,14 @@ func TestBuildOpenAPIV3SchemaFromMessage_SanitizesDiscriminatorUsingOriginalOneO
 
 	schema := buildOpenAPIV3SchemaFromMessageWithReferences(msg, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Thing"})
 
-	if schema.Discriminator != nil {
-		t.Fatalf("discriminator = %v, want nil after dropping old synthetic mapping", schema.Discriminator)
+	if schema.Discriminator == nil {
+		t.Fatal("discriminator = nil, want propertyName preserved after dropping old synthetic mapping")
+	}
+	if schema.Discriminator.PropertyName != "kind" {
+		t.Fatalf("propertyName = %q, want kind", schema.Discriminator.PropertyName)
+	}
+	if len(schema.Discriminator.Mapping) != 0 {
+		t.Fatalf("mapping = %v, want empty mapping after dropping old synthetic mapping", schema.Discriminator.Mapping)
 	}
 	assertProperties(t, schema.Properties, []string{"visible_arm"})
 }
