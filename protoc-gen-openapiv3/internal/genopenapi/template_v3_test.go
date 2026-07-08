@@ -35,6 +35,14 @@ func testOneOfField(name string) *descriptor.Field {
 	}}
 }
 
+func testOneOfMessageField(name string, typeName string) *descriptor.Field {
+	return &descriptor.Field{FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+		Name:     proto.String(name),
+		Type:     descriptorpb.FieldDescriptorProto_TYPE_MESSAGE.Enum(),
+		TypeName: proto.String(typeName),
+	}}
+}
+
 func assertRequiredFields(t *testing.T, got []string, want []string) {
 	t.Helper()
 	if !slices.Equal(got, want) {
@@ -196,6 +204,37 @@ func TestSanitizeIndependentOneOfDiscriminatorPreservesPrefixedRealMapping(t *te
 	}
 	if len(got.Mapping) != 1 || got.Mapping["alpha"] != "#/components/schemas/ExampleAlpha" {
 		t.Fatalf("mapping = %v, want alpha -> #/components/schemas/ExampleAlpha", got.Mapping)
+	}
+}
+
+func TestSanitizeIndependentOneOfDiscriminatorDropsPayloadSchemaMappings(t *testing.T) {
+	discriminator := &OpenAPIV3Discriminator{
+		PropertyName: "access_type",
+		Mapping: map[string]string{
+			"permanent": "#/components/schemas/PermanentAccess",
+			"temporary": "TemporaryAccess",
+			"other":     "#/components/schemas/OtherSchema",
+		},
+	}
+
+	got := sanitizeIndependentOneOfDiscriminator(discriminator, "AccessType", map[string][]*descriptor.Field{
+		"access": {
+			testOneOfMessageField("permanent_access", ".test.PermanentAccess"),
+			testOneOfMessageField("temporary_access", ".test.TemporaryAccess"),
+		},
+	}, map[string]string{
+		".test.PermanentAccess": "PermanentAccess",
+		".test.TemporaryAccess": "TemporaryAccess",
+	})
+
+	if got == nil {
+		t.Fatal("discriminator = nil, want propertyName preserved after dropping payload mappings")
+	}
+	if got.PropertyName != "access_type" {
+		t.Fatalf("propertyName = %q, want access_type", got.PropertyName)
+	}
+	if len(got.Mapping) != 1 || got.Mapping["other"] != "#/components/schemas/OtherSchema" {
+		t.Fatalf("mapping = %v, want only other -> #/components/schemas/OtherSchema", got.Mapping)
 	}
 }
 
