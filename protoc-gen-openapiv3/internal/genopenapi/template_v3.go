@@ -13,6 +13,7 @@ import (
 
 	"slices"
 
+	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/casing"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
 	"google.golang.org/genproto/googleapis/api/visibility"
@@ -1297,9 +1298,9 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
 	bodyRepresentation := extractRequestBodyFieldCombinations(binding, registry, resolvedNames)
 	parameterFields := extractParameterFields(binding)
-	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
-	for combinationName, bodyFields := range bodyRepresentation.fieldCombinations {
-		bodyProperties := make(map[string]*OpenAPIV3SchemaRef)
+	pathSelectedFields := pathSelectedOneOfFields(bodyRepresentation.oneofGroups, bodyRepresentation.prefix, parameterFields)
+	bodyProperties := make(map[string]*OpenAPIV3SchemaRef)
+	for _, bodyFields := range bodyRepresentation.fieldCombinations {
 		for _, bodyField := range bodyFields {
 			if !isVisible(getFieldVisibilityOption(bodyField.Field), registry) {
 				continue
@@ -1361,51 +1362,20 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 				}
 			}
 		}
-		if len(bodyProperties) > 0 {
-			schema := OpenAPIV3Schema{
-				Type:                "object",
-				Properties:          bodyProperties,
-				Required:            filterRequired(bodyRepresentation.requiredFields, bodyProperties),
-				Title:               bodyRepresentation.title,
-				Description:         bodyRepresentation.description,
-				OpenAPIV3Extensions: bodyRepresentation.extensions,
-			}
-			oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
-				OpenAPIV3Schema: &schema,
-			}
-		}
 	}
-	applyInferredDiscriminatorFields(oneOfSchemas)
-
-	sortedBodyOneOfNames := make([]string, 0, len(oneOfSchemas))
-	for name := range oneOfSchemas {
-		sortedBodyOneOfNames = append(sortedBodyOneOfNames, name)
-	}
-	sort.Strings(sortedBodyOneOfNames)
-
-	oneOfSchemaRefs := []*OpenAPIV3SchemaRef{}
-	for _, combinationName := range sortedBodyOneOfNames {
-		schemaRef := OpenAPIV3SchemaRef{
-			Ref: "#/components/schemas/" + combinationName,
-		}
-		oneOfSchemaRefs = append(oneOfSchemaRefs, &schemaRef)
-	}
-	var bodySchema *OpenAPIV3Schema
-	if len(oneOfSchemas) == 0 {
+	if len(bodyProperties) == 0 {
 		return nil, map[string]*OpenAPIV3SchemaRef{}
 	}
-	if len(oneOfSchemas) > 1 {
-		bodySchema = &OpenAPIV3Schema{
-			Type:  "object",
-			OneOf: oneOfSchemaRefs,
-		}
-		schemasToAddToComponents = oneOfSchemas
-	} else {
-		for _, schema := range oneOfSchemas {
-			bodySchema = schema.OpenAPIV3Schema
-			break
-		}
+
+	bodySchema := &OpenAPIV3Schema{
+		Type:                "object",
+		Properties:          bodyProperties,
+		Required:            filterRequired(bodyRepresentation.requiredFields, bodyProperties),
+		Title:               bodyRepresentation.title,
+		Description:         bodyRepresentation.description,
+		OpenAPIV3Extensions: bodyRepresentation.extensions,
 	}
+	applyIndependentOneOfGroupConstraints(bodySchema, bodyRepresentation.oneofGroups, bodyRepresentation.requiredFields, pathSelectedFields)
 
 	bodyContent := make(map[string]OpenAPIV3MediaType)
 	bodyContent["application/json"] = OpenAPIV3MediaType{
@@ -1413,19 +1383,12 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			OpenAPIV3Schema: bodySchema,
 		},
 	}
-	if len(oneOfSchemas) > 1 {
-		schemasToAddToComponents = oneOfSchemas
-	}
 
-	// If any variant of the request body has required properties, the body
-	// itself must be required — an optional body cannot have required fields.
-	bodyRequired := false
-	for _, schema := range oneOfSchemas {
-		if schema.OpenAPIV3Schema != nil && len(schema.OpenAPIV3Schema.Required) > 0 {
-			bodyRequired = true
-			break
-		}
-	}
+	// requestBody.required means the HTTP body object itself cannot be omitted.
+	// Independent oneof constraints may still allow an empty object when the
+	// protobuf oneof is unset, but callers should still pass a body for body-bound
+	// RPCs that use those fields. This preserves generated SDK nil-body guards.
+	bodyRequired := schemaRequiresJSONBody(bodySchema)
 
 	return &OpenAPIV3RequestBodyRef{
 		OpenAPIV3RequestBody: &OpenAPIV3RequestBody{
@@ -1437,7 +1400,9 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 
 type openAPIV3BodyRepresentation struct {
 	fieldCombinations map[string][]protoField
+	oneofGroups       map[string][]*descriptor.Field
 	requiredFields    []string
+	prefix            []string
 	title             string
 	description       string
 	extensions        OpenAPIV3Extensions
@@ -1512,57 +1477,21 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		}
 		oneofGroups[*oneofDecl.Name] = append(oneofGroups[*oneofDecl.Name], field)
 	}
-	for group := range oneofGroups {
-		numberOfFieldsInGroup := len(oneofGroups[group])
-		if numberOfFieldsInGroup <= 1 {
-			fieldsNotPartOfOneofGroup = append(fieldsNotPartOfOneofGroup, oneofGroups[group]...)
-			delete(oneofGroups, group)
+	oneofGroups = visibleOneOfGroups(oneofGroups, registry)
+	allBodyFields := append(slices.Clone(fieldsNotPartOfOneofGroup), flattenOneOfGroups(oneofGroups)...)
+	for _, field := range allBodyFields {
+		bodyField := protoField{
+			FullPathToField: append(prefix, *field.Name),
+			Field:           field,
 		}
-	}
-
-	if len(oneofGroups) == 0 {
-		for _, field := range fieldsNotPartOfOneofGroup {
-			bodyField := protoField{
-				FullPathToField: append(prefix, *field.Name),
-				Field:           field,
-			}
-			bodyFields = append(bodyFields, bodyField)
-		}
-		return openAPIV3BodyRepresentation{
-			fieldCombinations: map[string][]protoField{*fieldMessage.Name: bodyFields},
-			requiredFields:    requiredFields,
-			title:             title,
-			description:       description,
-			extensions:        extensions,
-			externaDocs:       externalDocs,
-		}
-	}
-
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, *fieldMessage.Name, resolvedNames)
-	protoFields := make(map[string][]protoField)
-	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
-		fields := make([]protoField, 0, len(combination)+len(fieldsNotPartOfOneofGroup))
-		for _, field := range fieldsNotPartOfOneofGroup {
-			bodyField := protoField{
-				FullPathToField: append(prefix, *field.Name),
-				Field:           field,
-			}
-			fields = append(fields, bodyField)
-		}
-
-		for _, field := range combination {
-			bodyField := protoField{
-				FullPathToField: append(prefix, *field.Name),
-				Field:           field,
-			}
-			fields = append(fields, bodyField)
-		}
-		protoFields[combinationName] = fields
+		bodyFields = append(bodyFields, bodyField)
 	}
 
 	return openAPIV3BodyRepresentation{
-		fieldCombinations: protoFields,
+		fieldCombinations: map[string][]protoField{*fieldMessage.Name: bodyFields},
+		oneofGroups:       oneofGroups,
 		requiredFields:    requiredFields,
+		prefix:            prefix,
 		title:             title,
 		description:       description,
 		extensions:        extensions,
@@ -1572,8 +1501,13 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 
 func filterRequired(required []string, bodyProperties map[string]*OpenAPIV3SchemaRef) []string {
 	result := make([]string, 0, len(required))
+	propertyNames := make(map[string]struct{}, len(bodyProperties)*2)
+	for propertyName := range bodyProperties {
+		propertyNames[propertyName] = struct{}{}
+		propertyNames[casing.JSONCamelCase(propertyName)] = struct{}{}
+	}
 	for _, r := range required {
-		if _, exists := bodyProperties[r]; exists {
+		if _, exists := propertyNames[r]; exists {
 			result = append(result, r)
 		}
 	}
@@ -1594,6 +1528,199 @@ func extractParameterFields(binding *descriptor.Binding) []protoField {
 		protoFields = append(protoFields, protoField)
 	}
 	return protoFields
+}
+
+func visibleOneOfGroups(oneofGroups map[string][]*descriptor.Field, registry *descriptor.Registry) map[string][]*descriptor.Field {
+	visibleGroups := make(map[string][]*descriptor.Field, len(oneofGroups))
+	for groupName, fields := range oneofGroups {
+		for _, field := range fields {
+			if registry != nil && !isVisible(getFieldVisibilityOption(field), registry) {
+				continue
+			}
+			visibleGroups[groupName] = append(visibleGroups[groupName], field)
+		}
+	}
+	return visibleGroups
+}
+
+func flattenOneOfGroups(oneofGroups map[string][]*descriptor.Field) []*descriptor.Field {
+	groupNames := make([]string, 0, len(oneofGroups))
+	for groupName := range oneofGroups {
+		groupNames = append(groupNames, groupName)
+	}
+	sort.Strings(groupNames)
+
+	var fields []*descriptor.Field
+	for _, groupName := range groupNames {
+		fields = append(fields, oneofGroups[groupName]...)
+	}
+	return fields
+}
+
+func isOneOfGroupRequired(groupName string, requiredFields []string) bool {
+	jsonGroupName := casing.JSONCamelCase(groupName)
+	for _, requiredField := range requiredFields {
+		if requiredField == groupName || requiredField == jsonGroupName {
+			return true
+		}
+	}
+	return false
+}
+
+// pathSelectedOneOfFields finds oneof groups already selected by URL path
+// parameters. Request-body schemas validate only the JSON body, so a oneof arm
+// supplied by the path must not be required again in the body.
+func pathSelectedOneOfFields(oneofGroups map[string][]*descriptor.Field, prefix []string, parameterFields []protoField) map[string]*descriptor.Field {
+	if len(parameterFields) == 0 {
+		return nil
+	}
+	selectedFields := map[string]*descriptor.Field{}
+	groupsWithConflictingPathFields := map[string]struct{}{}
+	for groupName, fields := range oneofGroups {
+		for _, field := range fields {
+			fieldPath := append(slices.Clone(prefix), field.GetName())
+			for _, parameterField := range parameterFields {
+				if !slices.Equal(fieldPath, parameterField.FullPathToField) {
+					continue
+				}
+				if selected, exists := selectedFields[groupName]; exists && selected.GetName() != field.GetName() {
+					groupsWithConflictingPathFields[groupName] = struct{}{}
+					continue
+				}
+				selectedFields[groupName] = field
+			}
+		}
+	}
+	for groupName := range groupsWithConflictingPathFields {
+		delete(selectedFields, groupName)
+	}
+	return selectedFields
+}
+
+func applyIndependentOneOfGroupConstraints(schema *OpenAPIV3Schema, oneofGroups map[string][]*descriptor.Field, requiredFields []string, pathSelectedFields map[string]*descriptor.Field) {
+	if schema == nil || len(oneofGroups) == 0 {
+		return
+	}
+	groupNames := make([]string, 0, len(oneofGroups))
+	for groupName := range oneofGroups {
+		groupNames = append(groupNames, groupName)
+	}
+	sort.Strings(groupNames)
+
+	oneOfGroupConstraints := make([]*OpenAPIV3SchemaRef, 0, len(groupNames))
+	for _, groupName := range groupNames {
+		fields := oneOfFieldsInProperties(oneofGroups[groupName], schema.Properties)
+		if len(fields) == 0 {
+			continue
+		}
+		if _, selectedByPath := pathSelectedFields[groupName]; selectedByPath {
+			applyForbiddenFields(schema, fieldNames(fields))
+			continue
+		}
+		requiredGroup := isOneOfGroupRequired(groupName, requiredFields)
+		if len(fields) == 1 {
+			if requiredGroup {
+				schema.Required = mergeRequiredFields(schema.Required, []string{fields[0].GetName()})
+			}
+			continue
+		}
+		oneOfGroupConstraints = append(oneOfGroupConstraints, oneOfGroupConstraint(fields, requiredGroup))
+	}
+
+	if len(oneOfGroupConstraints) == 0 {
+		return
+	}
+	if len(oneOfGroupConstraints) == 1 {
+		schema.OneOf = append(schema.OneOf, oneOfGroupConstraints[0].OpenAPIV3Schema.OneOf...)
+		return
+	}
+	schema.AllOf = append(schema.AllOf, oneOfGroupConstraints...)
+}
+
+func oneOfFieldsInProperties(fields []*descriptor.Field, properties map[string]*OpenAPIV3SchemaRef) []*descriptor.Field {
+	filtered := make([]*descriptor.Field, 0, len(fields))
+	for _, field := range fields {
+		if field == nil {
+			continue
+		}
+		if _, exists := properties[field.GetName()]; exists {
+			filtered = append(filtered, field)
+		}
+	}
+	return filtered
+}
+
+func oneOfGroupConstraint(fields []*descriptor.Field, requiredGroup bool) *OpenAPIV3SchemaRef {
+	branches := make([]*OpenAPIV3SchemaRef, 0, len(fields)+1)
+	for _, field := range fields {
+		branches = append(branches, requiredFieldSchemaRef(field.GetName()))
+	}
+	if !requiredGroup {
+		branches = append(branches, unsetOneOfGroupSchemaRef(fields))
+	}
+	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		OneOf: branches,
+	}}
+}
+
+func unsetOneOfGroupSchemaRef(fields []*descriptor.Field) *OpenAPIV3SchemaRef {
+	absentFields := make([]*OpenAPIV3SchemaRef, 0, len(fields))
+	for _, field := range fields {
+		absentFields = append(absentFields, requiredFieldSchemaRef(field.GetName()))
+	}
+	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type: "object",
+		Not: &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+			AnyOf: absentFields,
+		}},
+	}}
+}
+
+func requiredFieldSchemaRef(fieldName string) *OpenAPIV3SchemaRef {
+	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type:     "object",
+		Required: []string{fieldName},
+	}}
+}
+
+func applyForbiddenFields(schema *OpenAPIV3Schema, fields []string) {
+	if schema == nil || len(fields) == 0 {
+		return
+	}
+	for _, field := range fields {
+		schema.AllOf = append(schema.AllOf, &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+			Not: requiredFieldSchemaRef(field),
+		}})
+	}
+}
+
+func fieldNames(fields []*descriptor.Field) []string {
+	names := make([]string, 0, len(fields))
+	for _, field := range fields {
+		if field == nil {
+			continue
+		}
+		names = append(names, field.GetName())
+	}
+	return names
+}
+
+func schemaRequiresJSONBody(schema *OpenAPIV3Schema) bool {
+	if schema == nil {
+		return false
+	}
+	if len(schema.Required) > 0 {
+		return true
+	}
+	if len(schema.OneOf) > 0 {
+		return true
+	}
+	for _, schemaRef := range schema.AllOf {
+		if schemaRef != nil && schemaRef.OpenAPIV3Schema != nil && len(schemaRef.OpenAPIV3Schema.OneOf) > 0 {
+			return true
+		}
+	}
+	return false
 }
 
 func buildMessageSchemasWithReferences(param param, resolvedNames map[string]string) map[string]*OpenAPIV3SchemaRef {
@@ -1775,42 +1902,12 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 		oneofGroups[*oneofDecl.Name] = append(oneofGroups[*oneofDecl.Name], field)
 	}
 
-	for group := range oneofGroups {
-		numberOfFieldsInGroup := len(oneofGroups[group])
-		if numberOfFieldsInGroup <= 1 {
-			fieldsNotPartOfOneofGroup = append(fieldsNotPartOfOneofGroup, oneofGroups[group]...)
-			delete(oneofGroups, group)
-		}
-	}
-
-	if len(oneofGroups) == 0 {
-		return buildSchemaFromFieldsWithReferences(fieldsNotPartOfOneofGroup, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
-	}
-
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, resolvedNames[message.FQMN()], resolvedNames)
-
-	combinationNames := make([]string, 0, len(combinationsOfFieldsPartOfOneofGroups))
-	for name := range combinationsOfFieldsPartOfOneofGroups {
-		combinationNames = append(combinationNames, name)
-	}
-	sort.Strings(combinationNames)
-
-	oneOfSchemas := []*OpenAPIV3SchemaRef{}
-	for _, combinationName := range combinationNames {
-		oneOfSchemas = append(oneOfSchemas, &OpenAPIV3SchemaRef{
-			Ref: "#/components/schemas/" + combinationName,
-		})
-	}
-	if len(oneOfSchemas) == 1 {
-		for _, schema := range oneOfSchemas {
-			return schema.OpenAPIV3Schema
-		}
-	}
-
-	return &OpenAPIV3Schema{
-		OneOf:         oneOfSchemas,
-		Discriminator: discriminator,
-	}
+	visibleGroups := visibleOneOfGroups(oneofGroups, registry)
+	allSchemaFields := append(slices.Clone(fieldsNotPartOfOneofGroup), flattenOneOfGroups(visibleGroups)...)
+	schema := buildSchemaFromFieldsWithReferences(allSchemaFields, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
+	applyIndependentOneOfGroupConstraints(schema, visibleGroups, requiredFields, nil)
+	schema.Discriminator = sanitizeIndependentOneOfDiscriminator(discriminator, resolvedNames[message.FQMN()], oneofGroups, resolvedNames)
+	return schema
 }
 
 func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) (*OpenAPIV3Schema, map[string]*OpenAPIV3SchemaRef) {
@@ -1859,242 +1956,95 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 		}
 		oneofGroups[*oneofDecl.Name] = append(oneofGroups[*oneofDecl.Name], field)
 	}
-	for group := range oneofGroups {
-		numberOfFieldsInGroup := len(oneofGroups[group])
-		if numberOfFieldsInGroup <= 1 {
-			fieldsNotPartOfOneofGroup = append(fieldsNotPartOfOneofGroup, oneofGroups[group]...)
-			delete(oneofGroups, group)
-		}
-	}
-
-	if len(oneofGroups) == 0 {
-		return buildSchemaFromFields(fieldsNotPartOfOneofGroup, schemaMap, requiredFields, title, description, externalDocs, extensions, resolvedNames, registry), map[string]*OpenAPIV3SchemaRef{}
-	}
-
-	combinationsOfFieldsPartOfOneofGroups := generateOneOfCombinationsWithResolvedNames(oneofGroups, resolvedNames[message.FQMN()], resolvedNames)
-
-	oneOfSchemas := map[string]*OpenAPIV3SchemaRef{}
-	for combinationName, combination := range combinationsOfFieldsPartOfOneofGroups {
-		combinationFields := []*descriptor.Field{}
-		for _, field := range combination {
-			combinationFields = append(combinationFields, field)
-		}
-		allSchemaFields := append(fieldsNotPartOfOneofGroup, combinationFields...)
-		schema := buildSchemaFromFieldsWithReferences(allSchemaFields, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
-		oneOfSchemas[combinationName] = &OpenAPIV3SchemaRef{
-			OpenAPIV3Schema: schema,
-		}
-	}
-	applyInferredDiscriminatorFields(oneOfSchemas)
-
-	if len(oneOfSchemas) == 1 {
-		for _, schema := range oneOfSchemas {
-			return schema.OpenAPIV3Schema, map[string]*OpenAPIV3SchemaRef{}
-		}
-	}
-
-	sortedOneOfNames := make([]string, 0, len(oneOfSchemas))
-	for name := range oneOfSchemas {
-		sortedOneOfNames = append(sortedOneOfNames, name)
-	}
-	sort.Strings(sortedOneOfNames)
-
-	oneOfSchemaRefs := []*OpenAPIV3SchemaRef{}
-	for _, combinationName := range sortedOneOfNames {
-		schemaRef := OpenAPIV3SchemaRef{
-			Ref: "#/components/schemas/" + combinationName,
-		}
-		oneOfSchemaRefs = append(oneOfSchemaRefs, &schemaRef)
-	}
-
-	return &OpenAPIV3Schema{
-		OneOf:         oneOfSchemaRefs,
-		Discriminator: discriminator,
-	}, oneOfSchemas
+	visibleGroups := visibleOneOfGroups(oneofGroups, registry)
+	allSchemaFields := append(slices.Clone(fieldsNotPartOfOneofGroup), flattenOneOfGroups(visibleGroups)...)
+	schema := buildSchemaFromFields(allSchemaFields, schemaMap, requiredFields, title, description, externalDocs, extensions, resolvedNames, registry)
+	applyIndependentOneOfGroupConstraints(schema, visibleGroups, requiredFields, nil)
+	schema.Discriminator = sanitizeIndependentOneOfDiscriminator(discriminator, resolvedNames[message.FQMN()], oneofGroups, resolvedNames)
+	return schema, map[string]*OpenAPIV3SchemaRef{}
 }
 
-func generateOneOfCombinations(oneofGroups map[string][]*descriptor.Field, messageName string) map[string]map[string]*descriptor.Field {
-	return generateOneOfCombinationsWithResolvedNames(oneofGroups, messageName, nil)
-}
-
-func generateOneOfCombinationsWithResolvedNames(oneofGroups map[string][]*descriptor.Field, messageName string, resolvedNames map[string]string) map[string]map[string]*descriptor.Field {
-	allCombinations := []map[string]*descriptor.Field{{}}
-
-	oneofGroupNames := make([]string, 0, len(oneofGroups))
-	for name := range oneofGroups {
-		oneofGroupNames = append(oneofGroupNames, name)
-	}
-	sort.Strings(oneofGroupNames)
-
-	for _, groupName := range oneofGroupNames {
-		variants := oneofGroups[groupName]
-		newCombinations := []map[string]*descriptor.Field{}
-
-		for _, existingCombination := range allCombinations {
-			for _, variant := range variants {
-				newCombination := make(map[string]*descriptor.Field)
-				maps.Copy(newCombination, existingCombination)
-
-				newCombination[groupName] = variant
-
-				newCombinations = append(newCombinations, newCombination)
-			}
-		}
-		allCombinations = newCombinations
+func sanitizeIndependentOneOfDiscriminator(discriminator *OpenAPIV3Discriminator, schemaName string, oneofGroups map[string][]*descriptor.Field, resolvedNames map[string]string) *OpenAPIV3Discriminator {
+	if discriminator == nil || len(oneofGroups) == 0 || schemaName == "" || len(discriminator.Mapping) == 0 {
+		return discriminator
 	}
 
-	// Build a set of existing type names for collision detection.
-	// We store both the original name and the PascalCase version (dots removed)
-	// because some code generators ignore dots when comparing names.
-	existingTypeNames := make(map[string]struct{})
-	for _, name := range resolvedNames {
-		existingTypeNames[name] = struct{}{}
-		// Also add the PascalCase version (dots stripped) to catch collisions
-		// where the generated name would match after dot removal
-		pascalName := toPascalCase(name)
-		existingTypeNames[pascalName] = struct{}{}
-	}
-
-	namedCombinations := make(map[string]map[string]*descriptor.Field, len(allCombinations))
-
-	for _, combination := range allCombinations {
-		keyParts := make([]string, 0, len(oneofGroupNames))
-
-		for _, groupName := range oneofGroupNames {
-			variant, ok := combination[groupName]
-			if !ok {
-				continue
-			}
-			keyPart := fmt.Sprintf("%v", variant.GetName())
-			keyParts = append(keyParts, keyPart)
-		}
-
-		combinationName := strings.Join(keyParts, "_")
-		combinationName = messageName + "_" + combinationName
-		combinationName = toPascalCase(combinationName)
-
-		// Check for collision with existing type names and add suffix if needed
-		if _, exists := existingTypeNames[combinationName]; exists {
-			combinationName = combinationName + "Variant"
-		}
-
-		namedCombinations[combinationName] = combination
-	}
-
-	return namedCombinations
-}
-
-func applyInferredDiscriminatorFields(oneOfSchemas map[string]*OpenAPIV3SchemaRef) {
-	discriminatorFieldsBySchema, ok := inferDiscriminatorFields(oneOfSchemas)
-	if !ok {
-		return
-	}
-	for schemaName, discriminatorFields := range discriminatorFieldsBySchema {
-		schemaRef := oneOfSchemas[schemaName]
-		if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil {
+	syntheticVariantNames := syntheticOneOfVariantNames(schemaName, oneofGroups, resolvedNames)
+	mapping := make(map[string]string, len(discriminator.Mapping))
+	for key, value := range discriminator.Mapping {
+		refName := discriminatorMappingSchemaName(value)
+		if _, isSyntheticVariant := syntheticVariantNames[refName]; isSyntheticVariant {
 			continue
 		}
-		schemaRef.Required = mergeRequiredFields(schemaRef.Required, discriminatorFields)
+		mapping[key] = value
+	}
+	if len(mapping) == len(discriminator.Mapping) {
+		return discriminator
+	}
+	if len(mapping) == 0 {
+		return nil
+	}
+	return &OpenAPIV3Discriminator{
+		PropertyName: discriminator.PropertyName,
+		Mapping:      mapping,
 	}
 }
 
-func inferDiscriminatorFields(oneOfSchemas map[string]*OpenAPIV3SchemaRef) (map[string][]string, bool) {
-	if len(oneOfSchemas) <= 1 {
-		return map[string][]string{}, true
+func discriminatorMappingSchemaName(value string) string {
+	refName, ok := strings.CutPrefix(value, "#/components/schemas/")
+	if ok {
+		return refName
 	}
+	return value
+}
 
-	schemaNames := make([]string, 0, len(oneOfSchemas))
-	propertySets := make(map[string][]string, len(oneOfSchemas))
-	for schemaName, schemaRef := range oneOfSchemas {
-		schemaNames = append(schemaNames, schemaName)
-		if schemaRef == nil || schemaRef.OpenAPIV3Schema == nil {
+func syntheticOneOfVariantNames(schemaName string, oneofGroups map[string][]*descriptor.Field, resolvedNames map[string]string) map[string]struct{} {
+	groupNames := make([]string, 0, len(oneofGroups))
+	for groupName, fields := range oneofGroups {
+		if len(fields) <= 1 {
 			continue
 		}
-
-		properties := make([]string, 0, len(schemaRef.Properties))
-		for propertyName := range schemaRef.Properties {
-			properties = append(properties, propertyName)
-		}
-		sort.Strings(properties)
-		propertySets[schemaName] = properties
+		groupNames = append(groupNames, groupName)
 	}
-	sort.Strings(schemaNames)
+	sort.Strings(groupNames)
 
-	discriminatorFieldsBySchema := make(map[string][]string, len(oneOfSchemas))
-	for _, schemaName := range schemaNames {
-		discriminatorFields := minimalUniqueFieldSet(schemaName, propertySets)
-		if len(discriminatorFields) == 0 {
-			log.Printf("Warning: unable to infer discriminator fields for cartesian oneOf branch %q; sibling property sets: %v", schemaName, propertySets)
-			return nil, false
-		}
-		discriminatorFieldsBySchema[schemaName] = discriminatorFields
-	}
-
-	return discriminatorFieldsBySchema, true
-}
-
-func minimalUniqueFieldSet(targetSchema string, propertySets map[string][]string) []string {
-	targetProperties := propertySets[targetSchema]
-	if len(targetProperties) == 0 {
-		return nil
-	}
-
-	for subsetSize := 1; subsetSize <= len(targetProperties); subsetSize++ {
-		for _, subset := range combinationsOfStrings(targetProperties, subsetSize) {
-			isUnique := true
-			for schemaName, properties := range propertySets {
-				if schemaName == targetSchema {
-					continue
-				}
-				if containsAllStrings(properties, subset) {
-					isUnique = false
-					break
-				}
+	existingTypeNames := existingLegacyOpenAPITypeNames(resolvedNames)
+	names := map[string]struct{}{}
+	var collect func(int, []string)
+	collect = func(groupIndex int, fieldNames []string) {
+		if groupIndex == len(groupNames) {
+			if len(fieldNames) > 0 {
+				names[legacyOneOfVariantName(schemaName, fieldNames, existingTypeNames)] = struct{}{}
 			}
-			if isUnique {
-				return subset
-			}
-		}
-	}
-
-	return nil
-}
-
-func combinationsOfStrings(values []string, size int) [][]string {
-	if size <= 0 || size > len(values) {
-		return nil
-	}
-
-	var results [][]string
-	var current []string
-	var visit func(start int)
-	visit = func(start int) {
-		if len(current) == size {
-			results = append(results, slices.Clone(current))
 			return
 		}
-		for index := start; index <= len(values)-(size-len(current)); index++ {
-			current = append(current, values[index])
-			visit(index + 1)
-			current = current[:len(current)-1]
+		for _, field := range oneofGroups[groupNames[groupIndex]] {
+			if field == nil {
+				continue
+			}
+			collect(groupIndex+1, append(fieldNames, field.GetName()))
 		}
 	}
-	visit(0)
-
-	return results
+	collect(0, nil)
+	return names
 }
 
-func containsAllStrings(values []string, subset []string) bool {
-	valueSet := make(map[string]struct{}, len(values))
-	for _, value := range values {
-		valueSet[value] = struct{}{}
+func existingLegacyOpenAPITypeNames(resolvedNames map[string]string) map[string]struct{} {
+	existingTypeNames := make(map[string]struct{}, len(resolvedNames)*2)
+	for _, name := range resolvedNames {
+		existingTypeNames[name] = struct{}{}
+		existingTypeNames[toPascalCase(name)] = struct{}{}
 	}
-	for _, value := range subset {
-		if _, ok := valueSet[value]; !ok {
-			return false
-		}
+	return existingTypeNames
+}
+
+func legacyOneOfVariantName(schemaName string, fieldNames []string, existingTypeNames map[string]struct{}) string {
+	nameParts := append([]string{schemaName}, fieldNames...)
+	name := toPascalCase(strings.Join(nameParts, "_"))
+	if _, exists := existingTypeNames[name]; exists {
+		return name + "Variant"
 	}
-	return true
+	return name
 }
 
 func mergeRequiredFields(existing []string, additions []string) []string {
@@ -2148,7 +2098,7 @@ func buildSchemaFromFieldsWithReferences(
 		ExternalDocs:        externalDocs,
 		OpenAPIV3Extensions: extensions,
 		Properties:          properties,
-		Required:            requiredFields,
+		Required:            filterRequired(requiredFields, properties),
 	}
 	if len(properties) == 0 {
 		schema.AdditionalProperties = false
@@ -2182,7 +2132,7 @@ func buildSchemaFromFields(
 		ExternalDocs:        externalDocs,
 		OpenAPIV3Extensions: extensions,
 		Properties:          properties,
-		Required:            requiredFields,
+		Required:            filterRequired(requiredFields, properties),
 	}
 	if len(properties) == 0 {
 		schema.AdditionalProperties = false
