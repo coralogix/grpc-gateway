@@ -1477,6 +1477,7 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		}
 		oneofGroups[*oneofDecl.Name] = append(oneofGroups[*oneofDecl.Name], field)
 	}
+	requiredFields = normalizeRequiredFields(requiredFields, fieldsNotPartOfOneofGroup, oneofGroups)
 	oneofGroups = visibleOneOfGroups(oneofGroups, registry)
 	allBodyFields := append(slices.Clone(fieldsNotPartOfOneofGroup), flattenOneOfGroups(oneofGroups)...)
 	for _, field := range allBodyFields {
@@ -1512,6 +1513,83 @@ func filterRequired(required []string, bodyProperties map[string]*OpenAPIV3Schem
 		}
 	}
 	return result
+}
+
+func normalizeRequiredFields(requiredFields []string, fields []*descriptor.Field, oneofGroups map[string][]*descriptor.Field) []string {
+	if len(requiredFields) == 0 {
+		return requiredFields
+	}
+
+	candidates := requiredFieldCandidates(fields, oneofGroups)
+	normalized := make([]string, 0, len(requiredFields))
+	for _, requiredField := range requiredFields {
+		if _, ok := candidates[requiredField]; ok {
+			normalized = append(normalized, requiredField)
+			continue
+		}
+		if expanded, ok := expandConcatenatedRequiredField(requiredField, candidates); ok {
+			normalized = append(normalized, expanded...)
+			continue
+		}
+		normalized = append(normalized, requiredField)
+	}
+	return normalized
+}
+
+func requiredFieldCandidates(fields []*descriptor.Field, oneofGroups map[string][]*descriptor.Field) map[string]struct{} {
+	candidates := map[string]struct{}{}
+	for _, field := range fields {
+		if field == nil {
+			continue
+		}
+		candidates[field.GetName()] = struct{}{}
+		candidates[casing.JSONCamelCase(field.GetName())] = struct{}{}
+	}
+	for groupName := range oneofGroups {
+		candidates[groupName] = struct{}{}
+		candidates[casing.JSONCamelCase(groupName)] = struct{}{}
+	}
+	return candidates
+}
+
+func expandConcatenatedRequiredField(requiredField string, candidates map[string]struct{}) ([]string, bool) {
+	if requiredField == "" || len(candidates) == 0 {
+		return nil, false
+	}
+
+	candidateNames := make([]string, 0, len(candidates))
+	for candidate := range candidates {
+		candidateNames = append(candidateNames, candidate)
+	}
+	sort.Slice(candidateNames, func(i, j int) bool {
+		if len(candidateNames[i]) == len(candidateNames[j]) {
+			return candidateNames[i] < candidateNames[j]
+		}
+		return len(candidateNames[i]) > len(candidateNames[j])
+	})
+
+	var split func(string) ([]string, bool)
+	split = func(remaining string) ([]string, bool) {
+		if remaining == "" {
+			return nil, true
+		}
+		for _, candidate := range candidateNames {
+			if !strings.HasPrefix(remaining, candidate) {
+				continue
+			}
+			rest, ok := split(strings.TrimPrefix(remaining, candidate))
+			if ok {
+				return append([]string{candidate}, rest...), true
+			}
+		}
+		return nil, false
+	}
+
+	expanded, ok := split(requiredField)
+	if !ok || len(expanded) <= 1 {
+		return nil, false
+	}
+	return expanded, true
 }
 
 func extractParameterFields(binding *descriptor.Binding) []protoField {
@@ -1904,6 +1982,7 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 
 	visibleGroups := visibleOneOfGroups(oneofGroups, registry)
 	allSchemaFields := append(slices.Clone(fieldsNotPartOfOneofGroup), flattenOneOfGroups(visibleGroups)...)
+	requiredFields = normalizeRequiredFields(requiredFields, fieldsNotPartOfOneofGroup, oneofGroups)
 	schema := buildSchemaFromFieldsWithReferences(allSchemaFields, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
 	applyIndependentOneOfGroupConstraints(schema, visibleGroups, requiredFields, nil)
 	schema.Discriminator = sanitizeIndependentOneOfDiscriminator(discriminator, resolvedNames[message.FQMN()], oneofGroups, resolvedNames)
@@ -1958,6 +2037,7 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 	}
 	visibleGroups := visibleOneOfGroups(oneofGroups, registry)
 	allSchemaFields := append(slices.Clone(fieldsNotPartOfOneofGroup), flattenOneOfGroups(visibleGroups)...)
+	requiredFields = normalizeRequiredFields(requiredFields, fieldsNotPartOfOneofGroup, oneofGroups)
 	schema := buildSchemaFromFields(allSchemaFields, schemaMap, requiredFields, title, description, externalDocs, extensions, resolvedNames, registry)
 	applyIndependentOneOfGroupConstraints(schema, visibleGroups, requiredFields, nil)
 	schema.Discriminator = sanitizeIndependentOneOfDiscriminator(discriminator, resolvedNames[message.FQMN()], oneofGroups, resolvedNames)
