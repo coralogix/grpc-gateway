@@ -1970,7 +1970,7 @@ func sanitizeIndependentOneOfDiscriminator(discriminator *OpenAPIV3Discriminator
 	}
 
 	syntheticVariantNames := syntheticOneOfVariantNames(schemaName, oneofGroups, resolvedNames)
-	payloadSchemaNames := oneOfPayloadSchemaNames(oneofGroups, resolvedNames)
+	payloadSchemaNames := oneOfPayloadSchemaNames(schemaName, oneofGroups, resolvedNames)
 	mapping := make(map[string]string, len(discriminator.Mapping))
 	for key, value := range discriminator.Mapping {
 		refName := discriminatorMappingSchemaName(value)
@@ -1999,7 +1999,7 @@ func discriminatorMappingSchemaName(value string) string {
 	return value
 }
 
-func oneOfPayloadSchemaNames(oneofGroups map[string][]*descriptor.Field, resolvedNames map[string]string) map[string]struct{} {
+func oneOfPayloadSchemaNames(schemaName string, oneofGroups map[string][]*descriptor.Field, resolvedNames map[string]string) map[string]struct{} {
 	names := map[string]struct{}{}
 	for _, fields := range oneofGroups {
 		for _, field := range fields {
@@ -2007,6 +2007,9 @@ func oneOfPayloadSchemaNames(oneofGroups map[string][]*descriptor.Field, resolve
 				continue
 			}
 			if name, ok := resolvedNames[field.GetTypeName()]; ok {
+				if name == schemaName {
+					continue
+				}
 				names[name] = struct{}{}
 			}
 		}
