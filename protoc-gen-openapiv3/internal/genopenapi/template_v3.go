@@ -1981,9 +1981,6 @@ func sanitizeIndependentOneOfDiscriminator(discriminator *OpenAPIV3Discriminator
 	if len(mapping) == len(discriminator.Mapping) {
 		return discriminator
 	}
-	if len(mapping) == 0 {
-		return nil
-	}
 	return &OpenAPIV3Discriminator{
 		PropertyName: discriminator.PropertyName,
 		Mapping:      mapping,

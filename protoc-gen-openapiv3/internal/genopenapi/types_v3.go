@@ -325,6 +325,9 @@ func (s *OpenAPIV3Schema) CamelCase() {
 	if s.Not != nil {
 		s.Not.CamelCase()
 	}
+	if s.Discriminator != nil {
+		s.Discriminator.PropertyName = casing.JSONCamelCase(s.Discriminator.PropertyName)
+	}
 	newProperties := make(map[string]*OpenAPIV3SchemaRef)
 	newRequiredFields := make([]string, 0, len(s.Required))
 	for _, requiredField := range s.Required {
