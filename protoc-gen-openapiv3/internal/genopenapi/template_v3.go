@@ -3079,6 +3079,11 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			}
 			schemaRef := schemaMap[*field.TypeName]
 			if schemaRef != nil {
+				if isEmptyOpenAPIV3Schema(schemaRef.OpenAPIV3Schema) {
+					if name, ok := resolvedNames[*field.TypeName]; ok {
+						return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + name}, arrayExample
+					}
+				}
 				schema = schemaRef.OpenAPIV3Schema
 			} else {
 				log.Printf("Warning: could not find schema for message %s", *field.TypeName)
@@ -3087,6 +3092,10 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		}
 	}
 	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}, arrayExample
+}
+
+func isEmptyOpenAPIV3Schema(schema *OpenAPIV3Schema) bool {
+	return schema == nil || reflect.DeepEqual(*schema, OpenAPIV3Schema{})
 }
 
 func getFieldVisibilityOption(fd *descriptor.Field) *visibility.VisibilityRule {
