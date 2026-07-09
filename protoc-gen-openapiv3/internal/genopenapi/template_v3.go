@@ -1970,10 +1970,14 @@ func sanitizeIndependentOneOfDiscriminator(discriminator *OpenAPIV3Discriminator
 	}
 
 	syntheticVariantNames := syntheticOneOfVariantNames(schemaName, oneofGroups, resolvedNames)
+	payloadSchemaNames := oneOfPayloadSchemaNames(schemaName, oneofGroups, resolvedNames)
 	mapping := make(map[string]string, len(discriminator.Mapping))
 	for key, value := range discriminator.Mapping {
 		refName := discriminatorMappingSchemaName(value)
 		if _, isSyntheticVariant := syntheticVariantNames[refName]; isSyntheticVariant {
+			continue
+		}
+		if _, isPayloadSchema := payloadSchemaNames[refName]; isPayloadSchema {
 			continue
 		}
 		mapping[key] = value
@@ -1993,6 +1997,24 @@ func discriminatorMappingSchemaName(value string) string {
 		return refName
 	}
 	return value
+}
+
+func oneOfPayloadSchemaNames(schemaName string, oneofGroups map[string][]*descriptor.Field, resolvedNames map[string]string) map[string]struct{} {
+	names := map[string]struct{}{}
+	for _, fields := range oneofGroups {
+		for _, field := range fields {
+			if field == nil || field.GetProto3Optional() || field.GetType() != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE || field.GetTypeName() == "" {
+				continue
+			}
+			if name, ok := resolvedNames[field.GetTypeName()]; ok {
+				if name == schemaName {
+					continue
+				}
+				names[name] = struct{}{}
+			}
+		}
+	}
+	return names
 }
 
 func syntheticOneOfVariantNames(schemaName string, oneofGroups map[string][]*descriptor.Field, resolvedNames map[string]string) map[string]struct{} {
@@ -3057,6 +3079,11 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			}
 			schemaRef := schemaMap[*field.TypeName]
 			if schemaRef != nil {
+				if isEmptyOpenAPIV3Schema(schemaRef.OpenAPIV3Schema) {
+					if name, ok := resolvedNames[*field.TypeName]; ok {
+						return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + name}, arrayExample
+					}
+				}
 				schema = schemaRef.OpenAPIV3Schema
 			} else {
 				log.Printf("Warning: could not find schema for message %s", *field.TypeName)
@@ -3065,6 +3092,10 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		}
 	}
 	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}, arrayExample
+}
+
+func isEmptyOpenAPIV3Schema(schema *OpenAPIV3Schema) bool {
+	return schema == nil || reflect.DeepEqual(*schema, OpenAPIV3Schema{})
 }
 
 func getFieldVisibilityOption(fd *descriptor.Field) *visibility.VisibilityRule {
