@@ -2195,6 +2195,9 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 				schema.Description = fieldExtension.Description
 				minItems = fieldExtension.MinItems
 				schema.MaxItems = fieldExtension.MaxItems
+				if fieldExtension.UniqueItems {
+					schema.UniqueItems = true
+				}
 			}
 		}
 		schema.MinItems = uint64Ptr(minItems)
@@ -2695,6 +2698,9 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 				schema.Description = fieldExtension.Description
 				minItems = fieldExtension.MinItems
 				schema.MaxItems = fieldExtension.MaxItems
+				if fieldExtension.UniqueItems {
+					schema.UniqueItems = true
+				}
 			}
 		}
 		schema.MinItems = uint64Ptr(minItems)

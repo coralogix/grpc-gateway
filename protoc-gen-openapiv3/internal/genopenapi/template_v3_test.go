@@ -1270,6 +1270,64 @@ func TestRepeatedField_MinMaxItemsOnArraySchema(t *testing.T) {
 	}
 }
 
+func TestRepeatedField_UniqueItemsOnArraySchema(t *testing.T) {
+	field := makeRepeatedFieldWithExtension("group_by", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
+		UniqueItems: true,
+	})
+	reg := descriptor.NewRegistry()
+
+	t.Run("with-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.Type != "array" {
+			t.Fatalf("expected array schema, got %q", schema.Type)
+		}
+		if !schema.UniqueItems {
+			t.Fatal("expected uniqueItems=true on array schema")
+		}
+	})
+
+	t.Run("non-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaFromField(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.Type != "array" {
+			t.Fatalf("expected array schema, got %q", schema.Type)
+		}
+		if !schema.UniqueItems {
+			t.Fatal("expected uniqueItems=true on array schema")
+		}
+	})
+}
+
+func TestRepeatedField_NoExtension_UniqueItemsIsFalse(t *testing.T) {
+	field := makeRepeatedField("values", descriptorpb.FieldDescriptorProto_TYPE_STRING)
+	reg := descriptor.NewRegistry()
+
+	t.Run("with-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaWithReferencesFromField(field, reg, map[string]string{})
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.UniqueItems {
+			t.Error("expected uniqueItems=false when annotation is absent")
+		}
+	})
+
+	t.Run("non-references variant", func(t *testing.T) {
+		schema := buildPropertySchemaFromField(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+		if schema == nil {
+			t.Fatal("expected non-nil schema")
+		}
+		if schema.UniqueItems {
+			t.Error("expected uniqueItems=false when annotation is absent")
+		}
+	})
+}
+
 func TestFilterRequired(t *testing.T) {
 	prop := func(names ...string) map[string]*OpenAPIV3SchemaRef {
 		m := make(map[string]*OpenAPIV3SchemaRef, len(names))
