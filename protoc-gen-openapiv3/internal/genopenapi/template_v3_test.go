@@ -2084,7 +2084,7 @@ func assertQueryParamRequired(t *testing.T, params []OpenAPIV3ParameterRef, name
 	}
 }
 
-// TestBuildQueryParameters_RequiredFromMessageOption is the CX-50812 case: a
+// TestBuildQueryParameters_RequiredFromMessageOption covers the primary case: a
 // field listed in the request message's json_schema.required must not be
 // advertised as an optional query parameter.
 func TestBuildQueryParameters_RequiredFromMessageOption(t *testing.T) {
