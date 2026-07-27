@@ -1236,7 +1236,10 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 		if queryParameterSchema == nil {
 			continue
 		}
-		required := queryParameterRequired(message, field)
+		// A field with sub-fields bound to the path or body is already satisfied by
+		// those values, so the residual query parameter stays optional.
+		required := len(fieldPathsAlreadyIncludedInBodyOrPathParameters) == 0 &&
+			queryParameterRequired(message, field)
 		// This means we're dealing with an enum, so we can just create a reference parameter.
 		if queryParameterSchema.Ref != "" {
 			parameterRef := OpenAPIV3ParameterRef{

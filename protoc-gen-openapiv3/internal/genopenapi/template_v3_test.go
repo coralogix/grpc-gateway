@@ -2190,10 +2190,10 @@ func TestBuildQueryParameters_FieldOptionRequiredIgnoresNestedNames(t *testing.T
 	assertQueryParamRequired(t, params, "pagination", false)
 }
 
-// TestBuildQueryParameters_NestedObjectStaysRequiredWhenSubFieldIsPathParam
-// mirrors the request-body behaviour: the consumed sub-field is stripped from
-// the schema while the parent stays required.
-func TestBuildQueryParameters_NestedObjectStaysRequiredWhenSubFieldIsPathParam(t *testing.T) {
+// TestBuildQueryParameters_NestedObjectNotRequiredWhenSubFieldIsPathParam
+// verifies that a path-bound sub-field already satisfies its required parent,
+// so the residual query parameter carrying the remaining properties is optional.
+func TestBuildQueryParameters_NestedObjectNotRequiredWhenSubFieldIsPathParam(t *testing.T) {
 	binding, reg := newQueryParamFixtureFromMessages(t,
 		&descriptorpb.DescriptorProto{
 			Name:    proto.String("ReqMsg"),
@@ -2226,8 +2226,8 @@ func TestBuildQueryParameters_NestedObjectStaysRequiredWhenSubFieldIsPathParam(t
 	}
 	params := buildQueryParameters(binding, schemaMap, map[string]string{}, reg)
 	param := queryParamByName(t, params, "pagination")
-	if !param.Required {
-		t.Errorf("query parameter %q: required = false, want true", "pagination")
+	if param.Required {
+		t.Errorf("query parameter %q: required = true, want false", "pagination")
 	}
 	if _, exists := param.Schema.Properties["page_token"]; exists {
 		t.Errorf("expected the path-bound sub-field to be stripped from the parameter schema")
@@ -2235,6 +2235,35 @@ func TestBuildQueryParameters_NestedObjectStaysRequiredWhenSubFieldIsPathParam(t
 	if slices.Contains(param.Schema.Required, "page_token") {
 		t.Errorf("expected the path-bound sub-field to be dropped from the nested required list")
 	}
+}
+
+// TestBuildQueryParameters_NestedObjectRequiredWhenFullyInQuery is the
+// counterpart: with nothing bound to the path, the whole object comes from the
+// query and stays required.
+func TestBuildQueryParameters_NestedObjectRequiredWhenFullyInQuery(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t,
+		&descriptorpb.DescriptorProto{
+			Name:    proto.String("ReqMsg"),
+			Options: requiredMessageOptions("pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				messageQueryField("pagination", ".example.Pagination", 1, nil),
+			},
+		},
+		&descriptorpb.DescriptorProto{
+			Name: proto.String("Pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				stringQueryField("page_token", 1, nil),
+			},
+		},
+	)
+	schemaMap := map[string]*OpenAPIV3SchemaRef{
+		".example.Pagination": {OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type:       "object",
+			Properties: map[string]*OpenAPIV3SchemaRef{"page_token": {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}},
+		}},
+	}
+	params := buildQueryParameters(binding, schemaMap, map[string]string{}, reg)
+	assertQueryParamRequired(t, params, "pagination", true)
 }
 
 // TestBuildQueryParameters_OneOfGroupNameDoesNotRequireMembers verifies that a
