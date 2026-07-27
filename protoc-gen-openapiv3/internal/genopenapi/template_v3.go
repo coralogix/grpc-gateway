@@ -1199,6 +1199,7 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 			continue
 		}
 		shouldSkipField := false
+		hasPathBoundSubField := false
 		fieldPathsAlreadyIncludedInBodyOrPathParameters := [][]string{}
 		for _, pathParameter := range binding.PathParams {
 			if *field.Name == pathParameter.FieldPath[0].Name {
@@ -1211,6 +1212,7 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 						}
 					}
 					fieldPathsAlreadyIncludedInBodyOrPathParameters = append(fieldPathsAlreadyIncludedInBodyOrPathParameters, fieldPathToRemove)
+					hasPathBoundSubField = true
 				}
 			}
 		}
@@ -1236,10 +1238,11 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 		if queryParameterSchema == nil {
 			continue
 		}
-		// A field with sub-fields bound to the path or body is already satisfied by
-		// those values, so the residual query parameter stays optional.
-		required := len(fieldPathsAlreadyIncludedInBodyOrPathParameters) == 0 &&
-			queryParameterRequired(message, field)
+		// A path-bound sub-field always arrives, so it already satisfies its required
+		// parent and the residual query parameter stays optional. A body-bound one
+		// does not: requestBody.required tracks the body schema's own constraints,
+		// so the query parameter must keep carrying the requirement.
+		required := !hasPathBoundSubField && queryParameterRequired(message, field)
 		// This means we're dealing with an enum, so we can just create a reference parameter.
 		if queryParameterSchema.Ref != "" {
 			parameterRef := OpenAPIV3ParameterRef{

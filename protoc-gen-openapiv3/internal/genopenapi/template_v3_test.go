@@ -2266,6 +2266,50 @@ func TestBuildQueryParameters_NestedObjectRequiredWhenFullyInQuery(t *testing.T)
 	assertQueryParamRequired(t, params, "pagination", true)
 }
 
+// TestBuildQueryParameters_NestedObjectStaysRequiredWhenSubFieldIsBodyBound
+// verifies the body case is not treated like the path case: requestBody.required
+// follows the body schema's own constraints, so an optional body could be
+// omitted and the query parameter must keep carrying the parent requirement.
+func TestBuildQueryParameters_NestedObjectStaysRequiredWhenSubFieldIsBodyBound(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t,
+		&descriptorpb.DescriptorProto{
+			Name:    proto.String("ReqMsg"),
+			Options: requiredMessageOptions("pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				messageQueryField("pagination", ".example.Pagination", 1, nil),
+			},
+		},
+		&descriptorpb.DescriptorProto{
+			Name: proto.String("Pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				stringQueryField("page_token", 1, nil),
+				stringQueryField("page_size", 2, nil),
+			},
+		},
+	)
+	binding.HTTPMethod = "POST"
+	binding.Body = &descriptor.Body{
+		FieldPath: descriptor.FieldPath{{Name: "pagination"}, {Name: "page_token"}},
+	}
+	schemaMap := map[string]*OpenAPIV3SchemaRef{
+		".example.Pagination": {OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type: "object",
+			Properties: map[string]*OpenAPIV3SchemaRef{
+				"page_token": {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}},
+				"page_size":  {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}},
+			},
+		}},
+	}
+	params := buildQueryParameters(binding, schemaMap, map[string]string{}, reg)
+	param := queryParamByName(t, params, "pagination")
+	if !param.Required {
+		t.Errorf("query parameter %q: required = false, want true", "pagination")
+	}
+	if _, exists := param.Schema.Properties["page_token"]; exists {
+		t.Errorf("expected the body-bound sub-field to be stripped from the parameter schema")
+	}
+}
+
 // TestBuildQueryParameters_OneOfGroupNameDoesNotRequireMembers verifies that a
 // required oneof group does not make every arm mandatory.
 func TestBuildQueryParameters_OneOfGroupNameDoesNotRequireMembers(t *testing.T) {
