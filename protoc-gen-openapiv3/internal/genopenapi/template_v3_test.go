@@ -2372,6 +2372,31 @@ func TestBuildQueryParameters_RequiredPathParamNotDuplicatedAsQuery(t *testing.T
 	assertQueryParamRequired(t, params, "limit", false)
 }
 
+// TestBuildQueryParameters_RequiredParametersComeFirst verifies required query
+// parameters precede optional ones while relative order is otherwise preserved,
+// so a mixed message does not emit an out-of-order parameter list.
+func TestBuildQueryParameters_RequiredParametersComeFirst(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name:    proto.String("ReqMsg"),
+		Options: requiredMessageOptions("filter", "pagination"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			stringQueryField("filter", 1, nil),
+			stringQueryField("order_bys", 2, nil),
+			stringQueryField("pagination", 3, nil),
+			stringQueryField("page_token", 4, nil),
+		},
+	})
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	var got []string
+	for _, param := range params {
+		got = append(got, param.Name)
+	}
+	want := []string{"filter", "pagination", "order_bys", "page_token"}
+	if !slices.Equal(got, want) {
+		t.Errorf("parameter order = %v, want %v", got, want)
+	}
+}
+
 // TestBuildQueryParameters_NotRequiredWithoutAnnotations locks in the default.
 func TestBuildQueryParameters_NotRequiredWithoutAnnotations(t *testing.T) {
 	binding, reg := newQueryParamFixtureWithFields(t,

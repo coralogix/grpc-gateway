@@ -1296,6 +1296,12 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 		}
 		parameterRefs = append(parameterRefs, parameterRef)
 	}
+	// Required parameters must precede optional ones. Path parameters are always
+	// required and are prepended by the caller, so sorting the query parameters
+	// keeps the whole list ordered.
+	sort.SliceStable(parameterRefs, func(i, j int) bool {
+		return parameterRefs[i].Required && !parameterRefs[j].Required
+	})
 	return parameterRefs
 }
 
