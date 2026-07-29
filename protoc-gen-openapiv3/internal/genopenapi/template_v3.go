@@ -438,6 +438,43 @@ func valueSchemaMergeTarget(additionalPropertiesSchema *OpenAPIV3SchemaRef, sche
 	}, ""
 }
 
+// fieldAnnotationsForRef holds openapiv3_field (and proto deprecated) metadata
+// that must sit beside a $ref via an allOf wrapper. OpenAPI 3.0 ignores any
+// siblings of $ref, so annotated message/enum properties cannot be bare refs.
+type fieldAnnotationsForRef struct {
+	title       string
+	description string
+	example     RawExample
+	readOnly    bool
+	deprecated  bool
+	extensions  OpenAPIV3Extensions
+}
+
+func (a fieldAnnotationsForRef) present() bool {
+	return a.title != "" || a.description != "" || a.example != nil || a.readOnly || a.deprecated || len(a.extensions) > 0
+}
+
+// wrapRefWithFieldAnnotations returns a bare $ref when there are no field
+// annotations. Otherwise it returns an allOf wrapper so annotations can be
+// emitted beside the reference. The wrapper deliberately omits type so the
+// referenced schema (including enums) defines it.
+func wrapRefWithFieldAnnotations(ref string, a fieldAnnotationsForRef) *OpenAPIV3SchemaRef {
+	if ref == "" || !a.present() {
+		return &OpenAPIV3SchemaRef{Ref: ref}
+	}
+	return &OpenAPIV3SchemaRef{
+		OpenAPIV3Schema: &OpenAPIV3Schema{
+			Title:               a.title,
+			Description:         a.description,
+			Example:             a.example,
+			ReadOnly:            a.readOnly,
+			Deprecated:          a.deprecated,
+			OpenAPIV3Extensions: a.extensions,
+			AllOf:               []*OpenAPIV3SchemaRef{{Ref: ref}},
+		},
+	}
+}
+
 func mapValueSchemaAllowsFormatOverride(field *descriptor.Field) bool {
 	return *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING
 }
@@ -2557,9 +2594,18 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 		}
 		if isArrayOrMapElement {
 			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
 		}
 		if field.TypeName != nil {
-			return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}, arrayExample
+			return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], fieldAnnotationsForRef{
+				title:       title,
+				description: description,
+				example:     fieldExample,
+				readOnly:    readOnly,
+				deprecated:  deprecated,
+				extensions:  extensions,
+			}), arrayExample
 		}
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
@@ -2645,7 +2691,19 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 					OpenAPIV3Extensions:  extensions,
 				}}, arrayExample
 			} else {
-				return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}, arrayExample
+				if isArrayOrMapElement {
+					arrayExample = rawExample
+				} else {
+					fieldExample = rawExample
+				}
+				return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], fieldAnnotationsForRef{
+					title:       title,
+					description: description,
+					example:     fieldExample,
+					readOnly:    readOnly,
+					deprecated:  deprecated,
+					extensions:  extensions,
+				}), arrayExample
 			}
 		}
 	}
@@ -3057,8 +3115,17 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		}
 		if isArrayOrMapElement {
 			arrayExample = rawExample
+		} else {
+			fieldExample = rawExample
 		}
-		return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + resolvedNames[*field.TypeName]}, arrayExample
+		return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], fieldAnnotationsForRef{
+			title:       title,
+			description: description,
+			example:     fieldExample,
+			readOnly:    readOnly,
+			deprecated:  deprecated,
+			extensions:  extensions,
+		}), arrayExample
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
 			typeCategory := openapiTypeCategory(schema)
@@ -3149,7 +3216,19 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			if schemaRef != nil {
 				if isEmptyOpenAPIV3Schema(schemaRef.OpenAPIV3Schema) {
 					if name, ok := resolvedNames[*field.TypeName]; ok {
-						return &OpenAPIV3SchemaRef{Ref: "#/components/schemas/" + name}, arrayExample
+						if isArrayOrMapElement {
+							arrayExample = rawExample
+						} else {
+							fieldExample = rawExample
+						}
+						return wrapRefWithFieldAnnotations("#/components/schemas/"+name, fieldAnnotationsForRef{
+							title:       title,
+							description: description,
+							example:     fieldExample,
+							readOnly:    readOnly,
+							deprecated:  deprecated,
+							extensions:  extensions,
+						}), arrayExample
 					}
 				}
 				schema = schemaRef.OpenAPIV3Schema
