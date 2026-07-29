@@ -4442,13 +4442,24 @@ func TestApplyValueSchema_EnumRefSchemaWrapsWithAllOf(t *testing.T) {
 // to a $ref, optionally carrying openapiv3_field annotations.
 func makeMessageRefFieldWithExtension(t *testing.T, fieldName, msgName string, ext *options.JSONSchema) (*descriptor.Field, *descriptor.Registry, map[string]string) {
 	t.Helper()
+	return makeMessageRefFieldWithExtensionLabel(t, fieldName, msgName, ext, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL)
+}
+
+// makeRepeatedMessageRefFieldWithExtension builds a repeated message field that
+// resolves to an array of $ref items.
+func makeRepeatedMessageRefFieldWithExtension(t *testing.T, fieldName, msgName string, ext *options.JSONSchema) (*descriptor.Field, *descriptor.Registry, map[string]string) {
+	t.Helper()
+	return makeMessageRefFieldWithExtensionLabel(t, fieldName, msgName, ext, descriptorpb.FieldDescriptorProto_LABEL_REPEATED)
+}
+
+func makeMessageRefFieldWithExtensionLabel(t *testing.T, fieldName, msgName string, ext *options.JSONSchema, label descriptorpb.FieldDescriptorProto_Label) (*descriptor.Field, *descriptor.Registry, map[string]string) {
+	t.Helper()
 
 	opts := &descriptorpb.FieldOptions{}
 	if ext != nil {
 		proto.SetExtension(opts, options.E_Openapiv3Field, ext)
 	}
 
-	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
 	messageType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
 	typeName := ".example." + msgName
 
@@ -4458,7 +4469,7 @@ func makeMessageRefFieldWithExtension(t *testing.T, fieldName, msgName string, e
 			{
 				Name:   proto.String("id"),
 				Number: proto.Int32(1),
-				Label:  &optional,
+				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
 				Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
 			},
 		},
@@ -4469,7 +4480,7 @@ func makeMessageRefFieldWithExtension(t *testing.T, fieldName, msgName string, e
 			{
 				Name:     proto.String(fieldName),
 				Number:   proto.Int32(1),
-				Label:    &optional,
+				Label:    &label,
 				Type:     &messageType,
 				TypeName: proto.String(typeName),
 				Options:  opts,
@@ -4680,6 +4691,44 @@ func TestWrapRefWithFieldAnnotations_EmptyExtensionDoesNotWrap(t *testing.T) {
 
 	got, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, resolvedNames)
 	assertBareRef(t, got, wantRef)
+}
+
+func TestWrapRefWithFieldAnnotations_RepeatedMessageAnnotationsOnArray(t *testing.T) {
+	field, reg, resolvedNames := makeRepeatedMessageRefFieldWithExtension(t, "configs", "AutoCloseConfig", &options.JSONSchema{
+		Title:       "Configs",
+		Description: "List of auto-close configs.",
+		ReadOnly:    true,
+	})
+	field.Options.Deprecated = proto.Bool(true)
+	wantRef := "#/components/schemas/AutoCloseConfig"
+
+	assertArray := func(t *testing.T, got *OpenAPIV3SchemaRef) {
+		t.Helper()
+		if got == nil || got.OpenAPIV3Schema == nil {
+			t.Fatal("expected array schema")
+		}
+		s := got.OpenAPIV3Schema
+		if s.Type != "array" {
+			t.Fatalf("expected type=array, got %q", s.Type)
+		}
+		if s.Title != "Configs" || s.Description != "List of auto-close configs." {
+			t.Fatalf("expected annotations on array, got title=%q description=%q", s.Title, s.Description)
+		}
+		if !s.ReadOnly || !s.Deprecated {
+			t.Fatal("expected readOnly and deprecated on array schema")
+		}
+		assertBareRef(t, s.Items, wantRef)
+	}
+
+	t.Run("withRefs", func(t *testing.T) {
+		assertArray(t, buildPropertySchemaWithReferencesFromField(field, reg, resolvedNames))
+	})
+	t.Run("plain", func(t *testing.T) {
+		schemaMap := map[string]*OpenAPIV3SchemaRef{
+			".example.AutoCloseConfig": {OpenAPIV3Schema: &OpenAPIV3Schema{}},
+		}
+		assertArray(t, buildPropertySchemaFromField(field, schemaMap, resolvedNames, reg))
+	})
 }
 
 func TestMinItems_ArrayUnsetEmitsZero(t *testing.T) {

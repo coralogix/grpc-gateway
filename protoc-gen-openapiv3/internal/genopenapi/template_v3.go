@@ -475,6 +475,48 @@ func wrapRefWithFieldAnnotations(ref string, a fieldAnnotationsForRef) *OpenAPIV
 	}
 }
 
+func isRepeatedField(field *descriptor.Field) bool {
+	return field.Label != nil && *field.Label == descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+}
+
+// annotationsForRefProperty returns annotations for a message/enum $ref.
+// Repeated fields use this schema as array items, so property-level metadata
+// stays on the outer array instead of wrapping each item reference.
+func annotationsForRefProperty(field *descriptor.Field, a fieldAnnotationsForRef) fieldAnnotationsForRef {
+	if isRepeatedField(field) {
+		return fieldAnnotationsForRef{}
+	}
+	return a
+}
+
+// applyOpenAPIV3FieldAnnotationsToArray copies property-level openapiv3_field
+// (and proto deprecated) metadata onto a repeated field's array schema.
+func applyOpenAPIV3FieldAnnotationsToArray(schema *OpenAPIV3Schema, field *descriptor.Field) {
+	var minItems uint64
+	if field.Options != nil && field.Options.Deprecated != nil {
+		schema.Deprecated = *field.Options.Deprecated
+	}
+	if proto.HasExtension(field.Options, options.E_Openapiv3Field) {
+		if fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema); ok {
+			schema.Title = fieldExtension.Title
+			schema.Description = fieldExtension.Description
+			schema.ReadOnly = fieldExtension.ReadOnly
+			minItems = fieldExtension.MinItems
+			schema.MaxItems = fieldExtension.MaxItems
+			if fieldExtension.UniqueItems {
+				schema.UniqueItems = true
+			}
+			for k, v := range fieldExtension.Extensions {
+				if schema.OpenAPIV3Extensions == nil {
+					schema.OpenAPIV3Extensions = make(OpenAPIV3Extensions)
+				}
+				schema.OpenAPIV3Extensions[k] = v
+			}
+		}
+	}
+	schema.MinItems = uint64Ptr(minItems)
+}
+
 func mapValueSchemaAllowsFormatOverride(field *descriptor.Field) bool {
 	return *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING
 }
@@ -2287,19 +2329,10 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 		// Always emit minItems on arrays (default 0). proto3 cannot express an
 		// explicit 0, so an array with no min_items annotation still gets
 		// minItems: 0, satisfying ibm-array-attributes. maxItems has no natural
-		// default and is only emitted when annotated.
-		var minItems uint64
-		if proto.HasExtension(field.Options, options.E_Openapiv3Field) {
-			if fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema); ok {
-				schema.Description = fieldExtension.Description
-				minItems = fieldExtension.MinItems
-				schema.MaxItems = fieldExtension.MaxItems
-				if fieldExtension.UniqueItems {
-					schema.UniqueItems = true
-				}
-			}
-		}
-		schema.MinItems = uint64Ptr(minItems)
+		// default and is only emitted when annotated. Property-level metadata
+		// (title/description/readOnly/deprecated/extensions) goes on the array,
+		// not on message/enum item $refs.
+		applyOpenAPIV3FieldAnnotationsToArray(schema, field)
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
@@ -2598,14 +2631,14 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			fieldExample = rawExample
 		}
 		if field.TypeName != nil {
-			return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], fieldAnnotationsForRef{
+			return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], annotationsForRefProperty(field, fieldAnnotationsForRef{
 				title:       title,
 				description: description,
 				example:     fieldExample,
 				readOnly:    readOnly,
 				deprecated:  deprecated,
 				extensions:  extensions,
-			}), arrayExample
+			})), arrayExample
 		}
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
@@ -2696,14 +2729,14 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 				} else {
 					fieldExample = rawExample
 				}
-				return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], fieldAnnotationsForRef{
+				return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], annotationsForRefProperty(field, fieldAnnotationsForRef{
 					title:       title,
 					description: description,
 					example:     fieldExample,
 					readOnly:    readOnly,
 					deprecated:  deprecated,
 					extensions:  extensions,
-				}), arrayExample
+				})), arrayExample
 			}
 		}
 	}
@@ -2811,19 +2844,10 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 		// Always emit minItems on arrays (default 0). proto3 cannot express an
 		// explicit 0, so an array with no min_items annotation still gets
 		// minItems: 0, satisfying ibm-array-attributes. maxItems has no natural
-		// default and is only emitted when annotated.
-		var minItems uint64
-		if proto.HasExtension(field.Options, options.E_Openapiv3Field) {
-			if fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema); ok {
-				schema.Description = fieldExtension.Description
-				minItems = fieldExtension.MinItems
-				schema.MaxItems = fieldExtension.MaxItems
-				if fieldExtension.UniqueItems {
-					schema.UniqueItems = true
-				}
-			}
-		}
-		schema.MinItems = uint64Ptr(minItems)
+		// default and is only emitted when annotated. Property-level metadata
+		// (title/description/readOnly/deprecated/extensions) goes on the array,
+		// not on message/enum item $refs.
+		applyOpenAPIV3FieldAnnotationsToArray(schema, field)
 		return &OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
 		}
@@ -3118,14 +3142,14 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 		} else {
 			fieldExample = rawExample
 		}
-		return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], fieldAnnotationsForRef{
+		return wrapRefWithFieldAnnotations("#/components/schemas/"+resolvedNames[*field.TypeName], annotationsForRefProperty(field, fieldAnnotationsForRef{
 			title:       title,
 			description: description,
 			example:     fieldExample,
 			readOnly:    readOnly,
 			deprecated:  deprecated,
 			extensions:  extensions,
-		}), arrayExample
+		})), arrayExample
 	} else if field.TypeName != nil {
 		if schema, ok := wellKnownTypesToOpenAPIV3SchemaMapping[*field.TypeName]; ok && schema != nil {
 			typeCategory := openapiTypeCategory(schema)
@@ -3221,14 +3245,14 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 						} else {
 							fieldExample = rawExample
 						}
-						return wrapRefWithFieldAnnotations("#/components/schemas/"+name, fieldAnnotationsForRef{
+						return wrapRefWithFieldAnnotations("#/components/schemas/"+name, annotationsForRefProperty(field, fieldAnnotationsForRef{
 							title:       title,
 							description: description,
 							example:     fieldExample,
 							readOnly:    readOnly,
 							deprecated:  deprecated,
 							extensions:  extensions,
-						}), arrayExample
+						})), arrayExample
 					}
 				}
 				schema = schemaRef.OpenAPIV3Schema
