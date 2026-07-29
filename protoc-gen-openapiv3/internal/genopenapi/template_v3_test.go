@@ -1956,11 +1956,17 @@ func newQueryParamFixture(t *testing.T, fieldNames []string, descriptions map[st
 
 func newQueryParamFixtureWithFields(t *testing.T, fieldDescriptors ...*descriptorpb.FieldDescriptorProto) (*descriptor.Binding, *descriptor.Registry) {
 	t.Helper()
-
-	msgDesc := &descriptorpb.DescriptorProto{
+	return newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
 		Name:  proto.String("ReqMsg"),
 		Field: fieldDescriptors,
-	}
+	})
+}
+
+// newQueryParamFixtureFromMessages loads msgDesc as the GET request message,
+// along with any extra messages it references, into a fresh registry.
+func newQueryParamFixtureFromMessages(t *testing.T, msgDesc *descriptorpb.DescriptorProto, extraMessages ...*descriptorpb.DescriptorProto) (*descriptor.Binding, *descriptor.Registry) {
+	t.Helper()
+
 	file := &descriptor.File{
 		FileDescriptorProto: &descriptorpb.FileDescriptorProto{
 			Name:    proto.String("example.proto"),
@@ -1968,15 +1974,16 @@ func newQueryParamFixtureWithFields(t *testing.T, fieldDescriptors ...*descripto
 			Options: &descriptorpb.FileOptions{
 				GoPackage: proto.String("example.com/path/to/example;example"),
 			},
-			MessageType: []*descriptorpb.DescriptorProto{msgDesc},
+			MessageType: append([]*descriptorpb.DescriptorProto{msgDesc}, extraMessages...),
 		},
 	}
 	msg := &descriptor.Message{DescriptorProto: msgDesc, File: file}
+	fqmn := ".example." + msgDesc.GetName()
 	method := &descriptor.Method{
 		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
 			Name:       proto.String("DoThing"),
-			InputType:  proto.String(".example.ReqMsg"),
-			OutputType: proto.String(".example.ReqMsg"),
+			InputType:  proto.String(fqmn),
+			OutputType: proto.String(fqmn),
 		},
 		RequestType:  msg,
 		ResponseType: msg,
@@ -2013,6 +2020,392 @@ func TestBuildQueryParameters_DescriptionFromFieldExtension(t *testing.T) {
 	if got != "search filter expression" {
 		t.Errorf("expected parameter.description=%q, got %q", "search filter expression", got)
 	}
+}
+
+// --- required query parameters ---
+
+// requiredMessageOptions builds message options carrying
+// openapiv3_schema.json_schema.required.
+func requiredMessageOptions(required ...string) *descriptorpb.MessageOptions {
+	msgOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(msgOptions, options.E_Openapiv3Schema, &options.Schema{
+		JsonSchema: &options.JSONSchema{Required: required},
+	})
+	return msgOptions
+}
+
+// requiredFieldOptions builds field options carrying openapiv3_field.required.
+func requiredFieldOptions(required ...string) *descriptorpb.FieldOptions {
+	fieldOptions := &descriptorpb.FieldOptions{}
+	proto.SetExtension(fieldOptions, options.E_Openapiv3Field, &options.JSONSchema{Required: required})
+	return fieldOptions
+}
+
+func stringQueryField(name string, number int32, fieldOptions *descriptorpb.FieldOptions) *descriptorpb.FieldDescriptorProto {
+	typ := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	lbl := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	return &descriptorpb.FieldDescriptorProto{
+		Name:    proto.String(name),
+		Type:    &typ,
+		Label:   &lbl,
+		Number:  proto.Int32(number),
+		Options: fieldOptions,
+	}
+}
+
+func messageQueryField(name, typeName string, number int32, fieldOptions *descriptorpb.FieldOptions) *descriptorpb.FieldDescriptorProto {
+	typ := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	lbl := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	return &descriptorpb.FieldDescriptorProto{
+		Name:     proto.String(name),
+		Type:     &typ,
+		Label:    &lbl,
+		Number:   proto.Int32(number),
+		TypeName: proto.String(typeName),
+		Options:  fieldOptions,
+	}
+}
+
+func queryParamByName(t *testing.T, params []OpenAPIV3ParameterRef, name string) OpenAPIV3ParameterRef {
+	t.Helper()
+	for _, param := range params {
+		if param.OpenAPIV3Parameter != nil && param.Name == name {
+			return param
+		}
+	}
+	t.Fatalf("query parameter %q not found in %d parameters", name, len(params))
+	return OpenAPIV3ParameterRef{}
+}
+
+func assertQueryParamRequired(t *testing.T, params []OpenAPIV3ParameterRef, name string, want bool) {
+	t.Helper()
+	if got := queryParamByName(t, params, name).Required; got != want {
+		t.Errorf("query parameter %q: required = %v, want %v", name, got, want)
+	}
+}
+
+// TestBuildQueryParameters_RequiredFromMessageOption covers the primary case: a
+// field listed in the request message's json_schema.required must not be
+// advertised as an optional query parameter.
+func TestBuildQueryParameters_RequiredFromMessageOption(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name:    proto.String("ReqMsg"),
+		Options: requiredMessageOptions("category"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			stringQueryField("category", 1, nil),
+			stringQueryField("limit", 2, nil),
+		},
+	})
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	assertQueryParamRequired(t, params, "category", true)
+	assertQueryParamRequired(t, params, "limit", false)
+}
+
+// TestBuildQueryParameters_RequiredMatchesJSONCamelCaseName covers required
+// entries written in JSON casing, as component schemas already accept.
+func TestBuildQueryParameters_RequiredMatchesJSONCamelCaseName(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name:    proto.String("ReqMsg"),
+		Options: requiredMessageOptions("pageSize"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			stringQueryField("page_size", 1, nil),
+		},
+	})
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	assertQueryParamRequired(t, params, "page_size", true)
+}
+
+// TestBuildQueryParameters_RequiredEnumRefParameter covers the $ref branch,
+// which builds its own parameter object.
+func TestBuildQueryParameters_RequiredEnumRefParameter(t *testing.T) {
+	enumType := descriptorpb.FieldDescriptorProto_TYPE_ENUM
+	lbl := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name:    proto.String("ReqMsg"),
+		Options: requiredMessageOptions("kind"),
+		Field: []*descriptorpb.FieldDescriptorProto{{
+			Name:     proto.String("kind"),
+			Type:     &enumType,
+			Label:    &lbl,
+			Number:   proto.Int32(1),
+			TypeName: proto.String(".example.ReqMsg.Kind"),
+		}},
+		EnumType: []*descriptorpb.EnumDescriptorProto{{
+			Name: proto.String("Kind"),
+			Value: []*descriptorpb.EnumValueDescriptorProto{
+				{Name: proto.String("KIND_UNSPECIFIED"), Number: proto.Int32(0)},
+			},
+		}},
+	})
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{".example.ReqMsg.Kind": "Kind"}, reg)
+	param := queryParamByName(t, params, "kind")
+	if param.Schema == nil || param.Schema.Ref == "" {
+		t.Fatalf("expected a $ref schema for the enum parameter, got %+v", param.Schema)
+	}
+	if !param.Required {
+		t.Errorf("query parameter %q: required = false, want true", "kind")
+	}
+}
+
+// TestBuildQueryParameters_RequiredFromFieldOption covers the openapiv3_field
+// idiom where a field names itself required.
+func TestBuildQueryParameters_RequiredFromFieldOption(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name: proto.String("ReqMsg"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			stringQueryField("filter", 1, requiredFieldOptions("filter")),
+			stringQueryField("limit", 2, nil),
+		},
+	})
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	assertQueryParamRequired(t, params, "filter", true)
+	assertQueryParamRequired(t, params, "limit", false)
+}
+
+// TestBuildQueryParameters_FieldOptionRequiredIgnoresNestedNames guards against
+// reading a nested message's required list as the field's own requiredness.
+func TestBuildQueryParameters_FieldOptionRequiredIgnoresNestedNames(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t,
+		&descriptorpb.DescriptorProto{
+			Name: proto.String("ReqMsg"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				messageQueryField("pagination", ".example.Pagination", 1, requiredFieldOptions("page_token")),
+			},
+		},
+		&descriptorpb.DescriptorProto{
+			Name: proto.String("Pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				stringQueryField("page_token", 1, nil),
+			},
+		},
+	)
+	schemaMap := map[string]*OpenAPIV3SchemaRef{
+		".example.Pagination": {OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type:       "object",
+			Properties: map[string]*OpenAPIV3SchemaRef{"page_token": {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}},
+			Required:   []string{"page_token"},
+		}},
+	}
+	params := buildQueryParameters(binding, schemaMap, map[string]string{}, reg)
+	assertQueryParamRequired(t, params, "pagination", false)
+}
+
+// TestBuildQueryParameters_NestedObjectNotRequiredWhenSubFieldIsPathParam
+// verifies that a path-bound sub-field already satisfies its required parent,
+// so the residual query parameter carrying the remaining properties is optional.
+func TestBuildQueryParameters_NestedObjectNotRequiredWhenSubFieldIsPathParam(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t,
+		&descriptorpb.DescriptorProto{
+			Name:    proto.String("ReqMsg"),
+			Options: requiredMessageOptions("pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				messageQueryField("pagination", ".example.Pagination", 1, nil),
+			},
+		},
+		&descriptorpb.DescriptorProto{
+			Name: proto.String("Pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				stringQueryField("page_token", 1, nil),
+				stringQueryField("page_size", 2, nil),
+			},
+		},
+	)
+	binding.PathParams = []descriptor.Parameter{{
+		FieldPath: descriptor.FieldPath{{Name: "pagination"}, {Name: "page_token"}},
+		Method:    binding.Method,
+	}}
+	schemaMap := map[string]*OpenAPIV3SchemaRef{
+		".example.Pagination": {OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type: "object",
+			Properties: map[string]*OpenAPIV3SchemaRef{
+				"page_token": {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}},
+				"page_size":  {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}},
+			},
+			Required: []string{"page_token"},
+		}},
+	}
+	params := buildQueryParameters(binding, schemaMap, map[string]string{}, reg)
+	param := queryParamByName(t, params, "pagination")
+	if param.Required {
+		t.Errorf("query parameter %q: required = true, want false", "pagination")
+	}
+	if _, exists := param.Schema.Properties["page_token"]; exists {
+		t.Errorf("expected the path-bound sub-field to be stripped from the parameter schema")
+	}
+	if slices.Contains(param.Schema.Required, "page_token") {
+		t.Errorf("expected the path-bound sub-field to be dropped from the nested required list")
+	}
+}
+
+// TestBuildQueryParameters_NestedObjectRequiredWhenFullyInQuery is the
+// counterpart: with nothing bound to the path, the whole object comes from the
+// query and stays required.
+func TestBuildQueryParameters_NestedObjectRequiredWhenFullyInQuery(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t,
+		&descriptorpb.DescriptorProto{
+			Name:    proto.String("ReqMsg"),
+			Options: requiredMessageOptions("pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				messageQueryField("pagination", ".example.Pagination", 1, nil),
+			},
+		},
+		&descriptorpb.DescriptorProto{
+			Name: proto.String("Pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				stringQueryField("page_token", 1, nil),
+			},
+		},
+	)
+	schemaMap := map[string]*OpenAPIV3SchemaRef{
+		".example.Pagination": {OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type:       "object",
+			Properties: map[string]*OpenAPIV3SchemaRef{"page_token": {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}}},
+		}},
+	}
+	params := buildQueryParameters(binding, schemaMap, map[string]string{}, reg)
+	assertQueryParamRequired(t, params, "pagination", true)
+}
+
+// TestBuildQueryParameters_NestedObjectStaysRequiredWhenSubFieldIsBodyBound
+// verifies the body case is not treated like the path case: requestBody.required
+// follows the body schema's own constraints, so an optional body could be
+// omitted and the query parameter must keep carrying the parent requirement.
+func TestBuildQueryParameters_NestedObjectStaysRequiredWhenSubFieldIsBodyBound(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t,
+		&descriptorpb.DescriptorProto{
+			Name:    proto.String("ReqMsg"),
+			Options: requiredMessageOptions("pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				messageQueryField("pagination", ".example.Pagination", 1, nil),
+			},
+		},
+		&descriptorpb.DescriptorProto{
+			Name: proto.String("Pagination"),
+			Field: []*descriptorpb.FieldDescriptorProto{
+				stringQueryField("page_token", 1, nil),
+				stringQueryField("page_size", 2, nil),
+			},
+		},
+	)
+	binding.HTTPMethod = "POST"
+	binding.Body = &descriptor.Body{
+		FieldPath: descriptor.FieldPath{{Name: "pagination"}, {Name: "page_token"}},
+	}
+	schemaMap := map[string]*OpenAPIV3SchemaRef{
+		".example.Pagination": {OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type: "object",
+			Properties: map[string]*OpenAPIV3SchemaRef{
+				"page_token": {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}},
+				"page_size":  {OpenAPIV3Schema: &OpenAPIV3Schema{Type: "string"}},
+			},
+		}},
+	}
+	params := buildQueryParameters(binding, schemaMap, map[string]string{}, reg)
+	param := queryParamByName(t, params, "pagination")
+	if !param.Required {
+		t.Errorf("query parameter %q: required = false, want true", "pagination")
+	}
+	if _, exists := param.Schema.Properties["page_token"]; exists {
+		t.Errorf("expected the body-bound sub-field to be stripped from the parameter schema")
+	}
+}
+
+// TestBuildQueryParameters_OneOfGroupNameDoesNotRequireMembers verifies that a
+// required oneof group does not make every arm mandatory.
+func TestBuildQueryParameters_OneOfGroupNameDoesNotRequireMembers(t *testing.T) {
+	byID := stringQueryField("by_id", 1, nil)
+	byID.OneofIndex = proto.Int32(0)
+	byName := stringQueryField("by_name", 2, nil)
+	byName.OneofIndex = proto.Int32(0)
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name:      proto.String("ReqMsg"),
+		Options:   requiredMessageOptions("selector"),
+		Field:     []*descriptorpb.FieldDescriptorProto{byID, byName},
+		OneofDecl: []*descriptorpb.OneofDescriptorProto{{Name: proto.String("selector")}},
+	})
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	assertQueryParamRequired(t, params, "by_id", false)
+	assertQueryParamRequired(t, params, "by_name", false)
+}
+
+// TestBuildQueryParameters_RequiredRepeatedField covers repeated fields, which
+// render as an array schema but are still matched by name.
+func TestBuildQueryParameters_RequiredRepeatedField(t *testing.T) {
+	tags := stringQueryField("tags", 1, nil)
+	tags.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name:    proto.String("ReqMsg"),
+		Options: requiredMessageOptions("tags"),
+		Field:   []*descriptorpb.FieldDescriptorProto{tags},
+	})
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	param := queryParamByName(t, params, "tags")
+	if param.Schema.Type != "array" {
+		t.Fatalf("expected an array schema, got %q", param.Schema.Type)
+	}
+	if !param.Required {
+		t.Errorf("query parameter %q: required = false, want true", "tags")
+	}
+}
+
+// TestBuildQueryParameters_RequiredPathParamNotDuplicatedAsQuery verifies a
+// required field bound to the URL path is not also emitted as a query param.
+func TestBuildQueryParameters_RequiredPathParamNotDuplicatedAsQuery(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name:    proto.String("ReqMsg"),
+		Options: requiredMessageOptions("id"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			stringQueryField("id", 1, nil),
+			stringQueryField("limit", 2, nil),
+		},
+	})
+	binding.PathParams = []descriptor.Parameter{{
+		FieldPath: descriptor.FieldPath{{Name: "id"}},
+		Method:    binding.Method,
+	}}
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	for _, param := range params {
+		if param.Name == "id" {
+			t.Fatalf("path-bound field must not be emitted as a query parameter")
+		}
+	}
+	assertQueryParamRequired(t, params, "limit", false)
+}
+
+// TestBuildQueryParameters_RequiredParametersComeFirst verifies required query
+// parameters precede optional ones while relative order is otherwise preserved,
+// so a mixed message does not emit an out-of-order parameter list.
+func TestBuildQueryParameters_RequiredParametersComeFirst(t *testing.T) {
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name:    proto.String("ReqMsg"),
+		Options: requiredMessageOptions("filter", "pagination"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			stringQueryField("filter", 1, nil),
+			stringQueryField("order_bys", 2, nil),
+			stringQueryField("pagination", 3, nil),
+			stringQueryField("page_token", 4, nil),
+		},
+	})
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	var got []string
+	for _, param := range params {
+		got = append(got, param.Name)
+	}
+	want := []string{"filter", "pagination", "order_bys", "page_token"}
+	if !slices.Equal(got, want) {
+		t.Errorf("parameter order = %v, want %v", got, want)
+	}
+}
+
+// TestBuildQueryParameters_NotRequiredWithoutAnnotations locks in the default.
+func TestBuildQueryParameters_NotRequiredWithoutAnnotations(t *testing.T) {
+	binding, reg := newQueryParamFixtureWithFields(t,
+		stringQueryField("filter", 1, nil),
+		stringQueryField("limit", 2, nil),
+	)
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	assertQueryParamRequired(t, params, "filter", false)
+	assertQueryParamRequired(t, params, "limit", false)
 }
 
 // --- Fix 1: repeated-field array metadata ---

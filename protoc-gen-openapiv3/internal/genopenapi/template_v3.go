@@ -1191,13 +1191,15 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 	}
 	parameterRefs := []OpenAPIV3ParameterRef{}
 	message, err := registry.LookupMsg(*binding.Method.InputType, *binding.Method.InputType)
-	if err != nil {
+	if err != nil || message == nil {
+		return parameterRefs
 	}
 	for _, field := range message.Fields {
 		if !isVisible(getFieldVisibilityOption(field), registry) {
 			continue
 		}
 		shouldSkipField := false
+		hasPathBoundSubField := false
 		fieldPathsAlreadyIncludedInBodyOrPathParameters := [][]string{}
 		for _, pathParameter := range binding.PathParams {
 			if *field.Name == pathParameter.FieldPath[0].Name {
@@ -1210,6 +1212,7 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 						}
 					}
 					fieldPathsAlreadyIncludedInBodyOrPathParameters = append(fieldPathsAlreadyIncludedInBodyOrPathParameters, fieldPathToRemove)
+					hasPathBoundSubField = true
 				}
 			}
 		}
@@ -1235,13 +1238,18 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 		if queryParameterSchema == nil {
 			continue
 		}
+		// A path-bound sub-field always arrives, so it already satisfies its required
+		// parent and the residual query parameter stays optional. A body-bound one
+		// does not: requestBody.required tracks the body schema's own constraints,
+		// so the query parameter must keep carrying the requirement.
+		required := !hasPathBoundSubField && queryParameterRequired(message, field)
 		// This means we're dealing with an enum, so we can just create a reference parameter.
 		if queryParameterSchema.Ref != "" {
 			parameterRef := OpenAPIV3ParameterRef{
 				OpenAPIV3Parameter: &OpenAPIV3Parameter{
 					Name:        *field.Name,
 					In:          "query",
-					Required:    false,
+					Required:    required,
 					Description: fieldDescription(field),
 					Schema:      queryParameterSchema,
 				},
@@ -1281,14 +1289,68 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 			OpenAPIV3Parameter: &OpenAPIV3Parameter{
 				Name:        *field.Name,
 				In:          "query",
-				Required:    false,
+				Required:    required,
 				Description: fieldDescription(field),
 				Schema:      queryParameterSchema,
 			},
 		}
 		parameterRefs = append(parameterRefs, parameterRef)
 	}
+	// Required parameters must precede optional ones. Path parameters are always
+	// required and are prepended by the caller, so sorting the query parameters
+	// keeps the whole list ordered.
+	sort.SliceStable(parameterRefs, func(i, j int) bool {
+		return parameterRefs[i].Required && !parameterRefs[j].Required
+	})
 	return parameterRefs
+}
+
+// queryParameterRequired reports whether a top-level request field must be
+// supplied. Requiredness comes from the message-level json_schema.required list
+// or from the field's own openapiv3_field.required naming itself.
+func queryParameterRequired(message *descriptor.Message, field *descriptor.Field) bool {
+	if message == nil || field == nil {
+		return false
+	}
+	fieldNames := map[string]struct{}{
+		field.GetName():                       {},
+		casing.JSONCamelCase(field.GetName()): {},
+	}
+	if jsonName := field.GetJsonName(); jsonName != "" {
+		fieldNames[jsonName] = struct{}{}
+	}
+	for _, requiredName := range slices.Concat(messageRequiredFieldNames(message), fieldSelfRequiredNames(field)) {
+		if _, matches := fieldNames[requiredName]; matches {
+			return true
+		}
+	}
+	return false
+}
+
+// messageRequiredFieldNames reads json_schema.required from the message option.
+func messageRequiredFieldNames(message *descriptor.Message) []string {
+	if !proto.HasExtension(message.Options, options.E_Openapiv3Schema) {
+		return nil
+	}
+	schemaExtension, ok := proto.GetExtension(message.Options, options.E_Openapiv3Schema).(*options.Schema)
+	if !ok {
+		return nil
+	}
+	return schemaExtension.GetJsonSchema().GetRequired()
+}
+
+// fieldSelfRequiredNames reads openapiv3_field.required from the field option.
+// The raw annotation is used, not the built schema, whose required list belongs
+// to the nested message rather than the field itself.
+func fieldSelfRequiredNames(field *descriptor.Field) []string {
+	if !proto.HasExtension(field.Options, options.E_Openapiv3Field) {
+		return nil
+	}
+	fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema)
+	if !ok {
+		return nil
+	}
+	return fieldExtension.GetRequired()
 }
 
 func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPIV3SchemaRef, registry *descriptor.Registry, resolvedNames map[string]string) (*OpenAPIV3RequestBodyRef, map[string]*OpenAPIV3SchemaRef) {
