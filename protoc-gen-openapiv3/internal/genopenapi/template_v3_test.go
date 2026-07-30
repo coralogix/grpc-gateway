@@ -4438,6 +4438,299 @@ func TestApplyValueSchema_EnumRefSchemaWrapsWithAllOf(t *testing.T) {
 	}
 }
 
+// makeMessageRefFieldWithExtension builds a singular message field that resolves
+// to a $ref, optionally carrying openapiv3_field annotations.
+func makeMessageRefFieldWithExtension(t *testing.T, fieldName, msgName string, ext *options.JSONSchema) (*descriptor.Field, *descriptor.Registry, map[string]string) {
+	t.Helper()
+	return makeMessageRefFieldWithExtensionLabel(t, fieldName, msgName, ext, descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL)
+}
+
+// makeRepeatedMessageRefFieldWithExtension builds a repeated message field that
+// resolves to an array of $ref items.
+func makeRepeatedMessageRefFieldWithExtension(t *testing.T, fieldName, msgName string, ext *options.JSONSchema) (*descriptor.Field, *descriptor.Registry, map[string]string) {
+	t.Helper()
+	return makeMessageRefFieldWithExtensionLabel(t, fieldName, msgName, ext, descriptorpb.FieldDescriptorProto_LABEL_REPEATED)
+}
+
+func makeMessageRefFieldWithExtensionLabel(t *testing.T, fieldName, msgName string, ext *options.JSONSchema, label descriptorpb.FieldDescriptorProto_Label) (*descriptor.Field, *descriptor.Registry, map[string]string) {
+	t.Helper()
+
+	opts := &descriptorpb.FieldOptions{}
+	if ext != nil {
+		proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	}
+
+	messageType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	typeName := ".example." + msgName
+
+	targetMsg := &descriptorpb.DescriptorProto{
+		Name: proto.String(msgName),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:   proto.String("id"),
+				Number: proto.Int32(1),
+				Label:  descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum(),
+				Type:   descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum(),
+			},
+		},
+	}
+	parentMsg := &descriptorpb.DescriptorProto{
+		Name: proto.String("Parent"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     proto.String(fieldName),
+				Number:   proto.Int32(1),
+				Label:    &label,
+				Type:     &messageType,
+				TypeName: proto.String(typeName),
+				Options:  opts,
+			},
+		},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("message_ref_field.proto"),
+		Package: proto.String("example"),
+		Syntax:  proto.String("proto3"),
+		Options: &descriptorpb.FileOptions{
+			GoPackage: proto.String("example.com/path/to/example;example"),
+		},
+		MessageType: []*descriptorpb.DescriptorProto{parentMsg, targetMsg},
+	}
+
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{ProtoFile: []*descriptorpb.FileDescriptorProto{file}}); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+	msg, err := reg.LookupMsg("", ".example.Parent")
+	if err != nil {
+		t.Fatalf("LookupMsg: %v", err)
+	}
+	if len(msg.Fields) != 1 {
+		t.Fatalf("expected one field, got %d", len(msg.Fields))
+	}
+	return msg.Fields[0], reg, map[string]string{typeName: msgName}
+}
+
+// makeEnumRefFieldWithExtension builds a singular enum field that resolves to a
+// $ref, optionally carrying openapiv3_field annotations.
+func makeEnumRefFieldWithExtension(name, typeName string, ext *options.JSONSchema) *descriptor.Field {
+	opts := &descriptorpb.FieldOptions{}
+	if ext != nil {
+		proto.SetExtension(opts, options.E_Openapiv3Field, ext)
+	}
+	enumType := descriptorpb.FieldDescriptorProto_TYPE_ENUM
+	return &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String(name),
+			Type:     &enumType,
+			TypeName: proto.String(typeName),
+			Options:  opts,
+		},
+	}
+}
+
+func assertBareRef(t *testing.T, got *OpenAPIV3SchemaRef, wantRef string) {
+	t.Helper()
+	if got == nil {
+		t.Fatal("expected non-nil schema ref")
+	}
+	if got.Ref != wantRef {
+		t.Fatalf("expected bare $ref %q, got %q", wantRef, got.Ref)
+	}
+	if got.OpenAPIV3Schema != nil {
+		t.Fatalf("expected no inline schema on bare $ref, got %#v", got.OpenAPIV3Schema)
+	}
+}
+
+func assertAnnotatedRefWrapper(t *testing.T, got *OpenAPIV3SchemaRef, wantRef, wantDescription string) *OpenAPIV3Schema {
+	t.Helper()
+	if got == nil {
+		t.Fatal("expected non-nil schema ref")
+	}
+	if got.Ref != "" {
+		t.Fatalf("expected top-level ref cleared for allOf wrapper, got %q", got.Ref)
+	}
+	s := got.OpenAPIV3Schema
+	if s == nil {
+		t.Fatal("expected inline wrapper schema")
+	}
+	if s.Type != "" {
+		t.Fatalf("wrapper must omit type so the $ref defines it, got %q", s.Type)
+	}
+	if len(s.AllOf) != 1 || s.AllOf[0].Ref != wantRef {
+		t.Fatalf("expected allOf [{$ref: %q}], got %#v", wantRef, s.AllOf)
+	}
+	if wantDescription != "" && s.Description != wantDescription {
+		t.Fatalf("expected description %q, got %q", wantDescription, s.Description)
+	}
+	return s
+}
+
+func TestWrapRefWithFieldAnnotations_MessageDescription(t *testing.T) {
+	const wantDesc = "Configuration for automatically closing resolved cases."
+	field, reg, resolvedNames := makeMessageRefFieldWithExtension(t, "auto_close", "AutoCloseConfig", &options.JSONSchema{
+		Description: wantDesc,
+	})
+	wantRef := "#/components/schemas/AutoCloseConfig"
+
+	t.Run("withRefs", func(t *testing.T) {
+		got, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, resolvedNames)
+		assertAnnotatedRefWrapper(t, got, wantRef, wantDesc)
+	})
+	t.Run("plain", func(t *testing.T) {
+		schemaMap := map[string]*OpenAPIV3SchemaRef{
+			".example.AutoCloseConfig": {OpenAPIV3Schema: &OpenAPIV3Schema{}},
+		}
+		got, _ := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, reg)
+		assertAnnotatedRefWrapper(t, got, wantRef, wantDesc)
+	})
+}
+
+func TestWrapRefWithFieldAnnotations_EnumDescription(t *testing.T) {
+	const (
+		typeName = ".example.Status"
+		wantDesc = "Lifecycle status of the case."
+		wantRef  = "#/components/schemas/Status"
+	)
+	field := makeEnumRefFieldWithExtension("status", typeName, &options.JSONSchema{
+		Description: wantDesc,
+	})
+	resolvedNames := map[string]string{typeName: "Status"}
+	reg := descriptor.NewRegistry()
+
+	t.Run("withRefs", func(t *testing.T) {
+		got, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, resolvedNames)
+		assertAnnotatedRefWrapper(t, got, wantRef, wantDesc)
+	})
+	t.Run("plain", func(t *testing.T) {
+		got, _ := buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, resolvedNames, reg)
+		assertAnnotatedRefWrapper(t, got, wantRef, wantDesc)
+	})
+}
+
+func TestWrapRefWithFieldAnnotations_UnannotatedStaysBareRef(t *testing.T) {
+	t.Run("message", func(t *testing.T) {
+		field, reg, resolvedNames := makeMessageRefFieldWithExtension(t, "kpi", "KpiConfig", nil)
+		wantRef := "#/components/schemas/KpiConfig"
+
+		got, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, resolvedNames)
+		assertBareRef(t, got, wantRef)
+
+		schemaMap := map[string]*OpenAPIV3SchemaRef{
+			".example.KpiConfig": {OpenAPIV3Schema: &OpenAPIV3Schema{}},
+		}
+		got, _ = buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, reg)
+		assertBareRef(t, got, wantRef)
+	})
+	t.Run("enum", func(t *testing.T) {
+		const typeName = ".example.Priority"
+		field := makeEnumRefFieldWithExtension("priority", typeName, nil)
+		resolvedNames := map[string]string{typeName: "Priority"}
+		wantRef := "#/components/schemas/Priority"
+		reg := descriptor.NewRegistry()
+
+		got, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, resolvedNames)
+		assertBareRef(t, got, wantRef)
+
+		got, _ = buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, resolvedNames, reg)
+		assertBareRef(t, got, wantRef)
+	})
+}
+
+func TestWrapRefWithFieldAnnotations_MultipleAnnotationsNoWrapperType(t *testing.T) {
+	field, reg, resolvedNames := makeMessageRefFieldWithExtension(t, "auto_resolve", "AutoResolveConfig", &options.JSONSchema{
+		Title:       "Auto resolve",
+		Description: "When to auto-resolve.",
+		Example:     `"soon"`,
+		ReadOnly:    true,
+	})
+	// Proto-level deprecated is independent of openapiv3_field.
+	field.Options.Deprecated = proto.Bool(true)
+	wantRef := "#/components/schemas/AutoResolveConfig"
+
+	assertWrapper := func(t *testing.T, got *OpenAPIV3SchemaRef) {
+		t.Helper()
+		s := assertAnnotatedRefWrapper(t, got, wantRef, "When to auto-resolve.")
+		if s.Title != "Auto resolve" {
+			t.Errorf("expected title %q, got %q", "Auto resolve", s.Title)
+		}
+		if !s.ReadOnly {
+			t.Error("expected readOnly=true")
+		}
+		if !s.Deprecated {
+			t.Error("expected deprecated=true")
+		}
+		if string(s.Example) != `"soon"` {
+			t.Errorf("expected example %q, got %q", `"soon"`, string(s.Example))
+		}
+		if s.Type != "" {
+			t.Fatalf("wrapper must not set type, got %q", s.Type)
+		}
+		if _, err := json.Marshal(got); err != nil {
+			t.Fatalf("wrapper must marshal as valid JSON: %v", err)
+		}
+	}
+
+	t.Run("withRefs", func(t *testing.T) {
+		got, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, resolvedNames)
+		assertWrapper(t, got)
+	})
+	t.Run("plain", func(t *testing.T) {
+		schemaMap := map[string]*OpenAPIV3SchemaRef{
+			".example.AutoResolveConfig": {OpenAPIV3Schema: &OpenAPIV3Schema{}},
+		}
+		got, _ := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, reg)
+		assertWrapper(t, got)
+	})
+}
+
+func TestWrapRefWithFieldAnnotations_EmptyExtensionDoesNotWrap(t *testing.T) {
+	// An empty openapiv3_field block should not force an allOf wrapper.
+	field, reg, resolvedNames := makeMessageRefFieldWithExtension(t, "kpi", "KpiConfig", &options.JSONSchema{})
+	wantRef := "#/components/schemas/KpiConfig"
+
+	got, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, resolvedNames)
+	assertBareRef(t, got, wantRef)
+}
+
+func TestWrapRefWithFieldAnnotations_RepeatedMessageAnnotationsOnArray(t *testing.T) {
+	field, reg, resolvedNames := makeRepeatedMessageRefFieldWithExtension(t, "configs", "AutoCloseConfig", &options.JSONSchema{
+		Title:       "Configs",
+		Description: "List of auto-close configs.",
+		ReadOnly:    true,
+	})
+	field.Options.Deprecated = proto.Bool(true)
+	wantRef := "#/components/schemas/AutoCloseConfig"
+
+	assertArray := func(t *testing.T, got *OpenAPIV3SchemaRef) {
+		t.Helper()
+		if got == nil || got.OpenAPIV3Schema == nil {
+			t.Fatal("expected array schema")
+		}
+		s := got.OpenAPIV3Schema
+		if s.Type != "array" {
+			t.Fatalf("expected type=array, got %q", s.Type)
+		}
+		if s.Title != "Configs" || s.Description != "List of auto-close configs." {
+			t.Fatalf("expected annotations on array, got title=%q description=%q", s.Title, s.Description)
+		}
+		if !s.ReadOnly || !s.Deprecated {
+			t.Fatal("expected readOnly and deprecated on array schema")
+		}
+		assertBareRef(t, s.Items, wantRef)
+	}
+
+	t.Run("withRefs", func(t *testing.T) {
+		assertArray(t, buildPropertySchemaWithReferencesFromField(field, reg, resolvedNames))
+	})
+	t.Run("plain", func(t *testing.T) {
+		schemaMap := map[string]*OpenAPIV3SchemaRef{
+			".example.AutoCloseConfig": {OpenAPIV3Schema: &OpenAPIV3Schema{}},
+		}
+		assertArray(t, buildPropertySchemaFromField(field, schemaMap, resolvedNames, reg))
+	})
+}
+
 func TestMinItems_ArrayUnsetEmitsZero(t *testing.T) {
 	field := makeRepeatedField("tags", descriptorpb.FieldDescriptorProto_TYPE_STRING)
 	reg := descriptor.NewRegistry()
