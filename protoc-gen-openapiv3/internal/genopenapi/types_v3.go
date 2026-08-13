@@ -2,9 +2,12 @@ package genopenapi
 
 import (
 	"encoding/json"
+	"sort"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/casing"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
+	"go.yaml.in/yaml/v3"
+	"google.golang.org/protobuf/types/known/structpb"
 )
 
 // OpenAPI v3 root document and all nested types with both JSON and YAML annotations.
@@ -155,6 +158,45 @@ func (op OpenAPIV3Operation) MarshalJSON() ([]byte, error) {
 		m[k] = v
 	}
 	return json.Marshal(m)
+}
+
+// MarshalYAML mirrors MarshalJSON. The extensions map is tagged yaml:"-" and the
+// YAML encoder never calls MarshalJSON, so without this extensions are silently
+// dropped from --output_format=yaml. Encoding into a yaml.Node rather than a map
+// preserves the struct field order.
+func (op OpenAPIV3Operation) MarshalYAML() (interface{}, error) {
+	type Alias OpenAPIV3Operation
+	node := &yaml.Node{}
+	if err := node.Encode(Alias(op)); err != nil {
+		return nil, err
+	}
+	keys := make([]string, 0, len(op.OpenAPIV3Extensions))
+	for k := range op.OpenAPIV3Extensions {
+		keys = append(keys, k)
+	}
+	// Sorted so the generated spec stays byte-identical across generations.
+	sort.Strings(keys)
+	for _, k := range keys {
+		keyNode := &yaml.Node{}
+		if err := keyNode.Encode(k); err != nil {
+			return nil, err
+		}
+		valNode := &yaml.Node{}
+		if err := valNode.Encode(yamlExtensionValue(op.OpenAPIV3Extensions[k])); err != nil {
+			return nil, err
+		}
+		node.Content = append(node.Content, keyNode, valNode)
+	}
+	return node, nil
+}
+
+// yamlExtensionValue unwraps structpb wrappers into plain Go values so the YAML
+// encoder emits the value itself rather than structpb's internal representation.
+func yamlExtensionValue(v interface{}) interface{} {
+	if pv, ok := v.(*structpb.Value); ok {
+		return pv.AsInterface()
+	}
+	return v
 }
 
 type OpenAPIV3ParameterRef struct {

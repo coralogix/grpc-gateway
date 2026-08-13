@@ -321,7 +321,8 @@
         "summary": "Replace Thing",
         "tags": [
           "Things Service"
-        ]
+        ],
+        "x-stability": "experimental"
       },
       "delete": {
         "externalDocs": {
