@@ -317,12 +317,20 @@ func (s OpenAPIV3Schema) MarshalJSON() ([]byte, error) {
 	if len(s.OpenAPIV3Extensions) == 0 {
 		return b, nil
 	}
-	var m map[string]interface{}
+	// Merge via json.RawMessage so the already-encoded fields pass through
+	// verbatim. Unmarshaling into map[string]interface{} would decode every JSON
+	// number as float64 and round an integer constraint above 2^53 (e.g. a large
+	// maxLength/maxItems) — adding an extension must not alter other fields.
+	var m map[string]json.RawMessage
 	if err := json.Unmarshal(b, &m); err != nil {
 		return nil, err
 	}
 	for k, v := range s.OpenAPIV3Extensions {
-		m[k] = v
+		ev, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		m[k] = ev
 	}
 	return json.Marshal(m)
 }

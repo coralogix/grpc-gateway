@@ -2,6 +2,7 @@ package genopenapi
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 )
 
@@ -66,5 +67,30 @@ func TestOpenAPIV3SchemaMarshalNestedAndEmpty(t *testing.T) {
 	}
 	if _, ok := m.Properties["stable"]["x-stability"]; ok {
 		t.Errorf("stable property unexpectedly carries x-stability; json=%s", b)
+	}
+}
+
+// Merging extensions must not alter other fields. A uint64 constraint above 2^53
+// would be rounded if the merge round-tripped through map[string]interface{}
+// (JSON numbers decode as float64); the RawMessage merge preserves it exactly.
+func TestOpenAPIV3SchemaMarshalExtensionsPreserveIntegerPrecision(t *testing.T) {
+	t.Parallel()
+
+	const big = uint64(9007199254740993) // 2^53 + 1, not representable as float64
+	ref := &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type:                "string",
+		MaxLength:           big,
+		OpenAPIV3Extensions: OpenAPIV3Extensions{"x-stability": "preview"},
+	}}
+
+	b, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if !strings.Contains(string(b), `"maxLength":9007199254740993`) {
+		t.Errorf("maxLength lost precision; json=%s", b)
+	}
+	if !strings.Contains(string(b), `"x-stability":"preview"`) {
+		t.Errorf("x-stability missing; json=%s", b)
 	}
 }
