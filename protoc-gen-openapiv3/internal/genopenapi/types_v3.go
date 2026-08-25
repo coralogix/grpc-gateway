@@ -303,6 +303,38 @@ func (s *OpenAPIV3SchemaRef) MarshalJSON() ([]byte, error) {
 	return json.Marshal(schema)
 }
 
+// MarshalJSON flattens the schema's x-* extensions (e.g. x-stability) onto the
+// emitted object, mirroring OpenAPIV3Operation.MarshalJSON. The embedded
+// OpenAPIV3Extensions map is tagged json:"-", so without this the extensions
+// plumbed through from openapiv3_field / openapiv3_enum options would be
+// silently dropped from the output.
+func (s OpenAPIV3Schema) MarshalJSON() ([]byte, error) {
+	type Alias OpenAPIV3Schema
+	b, err := json.Marshal(Alias(s))
+	if err != nil {
+		return nil, err
+	}
+	if len(s.OpenAPIV3Extensions) == 0 {
+		return b, nil
+	}
+	// Merge via json.RawMessage so the already-encoded fields pass through
+	// verbatim. Unmarshaling into map[string]interface{} would decode every JSON
+	// number as float64 and round an integer constraint above 2^53 (e.g. a large
+	// maxLength/maxItems) — adding an extension must not alter other fields.
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range s.OpenAPIV3Extensions {
+		ev, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		m[k] = ev
+	}
+	return json.Marshal(m)
+}
+
 func (s *OpenAPIV3Schema) CamelCase() {
 	if s == nil {
 		return
