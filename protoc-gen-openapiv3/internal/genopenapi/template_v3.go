@@ -335,6 +335,55 @@ func unsignedMinimum(v *float64) *float64 {
 	return float64Ptr(*v)
 }
 
+// examplesOf wraps a single schema example into the JSON Schema 2020-12
+// (OpenAPI 3.1) examples array, returning nil for an empty value so we never
+// emit examples: [null].
+func examplesOf(v RawExample) []RawExample {
+	if len(v) == 0 {
+		return nil
+	}
+	return []RawExample{v}
+}
+
+// resolveMaximum converts the 3.0-style annotation (inclusive maximum + a
+// boolean exclusiveMaximum) into the JSON Schema 2020-12 (OpenAPI 3.1) form,
+// where the exclusive bound is itself the numeric value. The two keywords are
+// mutually exclusive in 2020-12, so when exclusive is set the inclusive maximum
+// is dropped. The proto maximum is a plain double with no unset sentinel, so a
+// value of 0 is treated as absent (matching the prior omitempty behavior).
+// Returns (maximum, exclusiveMaximum); nil means the bound is absent.
+func resolveMaximum(maximum float64, exclusive bool) (*float64, *float64) {
+	if maximum == 0 {
+		return nil, nil
+	}
+	if exclusive {
+		return nil, float64Ptr(maximum)
+	}
+	return float64Ptr(maximum), nil
+}
+
+// resolveMinimum is resolveMaximum's counterpart for the lower bound. The proto
+// minimum is an optional double, so nil means absent and an explicit 0 is kept.
+func resolveMinimum(minimum *float64, exclusive bool) (*float64, *float64) {
+	if minimum == nil {
+		return nil, nil
+	}
+	if exclusive {
+		return nil, minimum
+	}
+	return minimum, nil
+}
+
+// resolveUnsignedMinimum is resolveMinimum for unsigned integers, whose natural
+// lower bound is 0: unless an exclusive minimum is explicitly annotated, it
+// keeps the default minimum: 0 (via unsignedMinimum).
+func resolveUnsignedMinimum(minimum *float64, exclusive bool) (*float64, *float64) {
+	if exclusive && minimum != nil {
+		return nil, minimum
+	}
+	return unsignedMinimum(minimum), nil
+}
+
 // applyValueSchema merges map field value_schema overrides into the generated
 // schema for additionalProperties. The protobuf map value type still determines
 // the base OpenAPI type and structural shape; value_schema supplies compatible
@@ -362,18 +411,12 @@ func applyValueSchemaForMapValue(additionalPropertiesSchema *OpenAPIV3SchemaRef,
 			schema.MultipleOf = valueSchema.MultipleOf
 		}
 		if valueSchema.Maximum != 0 {
-			schema.Maximum = valueSchema.Maximum
+			schema.Maximum, schema.ExclusiveMaximum = resolveMaximum(valueSchema.Maximum, valueSchema.ExclusiveMaximum)
 		}
 		if valueSchema.Minimum != nil {
 			if schema.Minimum == nil || *valueSchema.Minimum >= *schema.Minimum {
-				schema.Minimum = valueSchema.Minimum
+				schema.Minimum, schema.ExclusiveMinimum = resolveMinimum(valueSchema.Minimum, valueSchema.ExclusiveMinimum)
 			}
-		}
-		if valueSchema.ExclusiveMaximum {
-			schema.ExclusiveMaximum = true
-		}
-		if valueSchema.ExclusiveMinimum {
-			schema.ExclusiveMinimum = true
 		}
 	case "string":
 		if valueSchema.MaxLength != 0 {
@@ -415,7 +458,7 @@ func applyValueSchemaForMapValue(additionalPropertiesSchema *OpenAPIV3SchemaRef,
 	if valueSchema.Example != "" {
 		constrainedExample, err := validateAndCoerceJsonExample(valueSchema.Example, schemaType)
 		if err == nil && constrainedExample != "" && json.Valid([]byte(constrainedExample)) {
-			schema.Example = RawExample(constrainedExample)
+			schema.Examples = examplesOf(RawExample(constrainedExample))
 		}
 	}
 
@@ -466,7 +509,7 @@ func wrapRefWithFieldAnnotations(ref string, a fieldAnnotationsForRef) *OpenAPIV
 		OpenAPIV3Schema: &OpenAPIV3Schema{
 			Title:               a.title,
 			Description:         a.description,
-			Example:             a.example,
+			Examples:            examplesOf(a.example),
 			ReadOnly:            a.readOnly,
 			Deprecated:          a.deprecated,
 			OpenAPIV3Extensions: a.extensions,
@@ -577,7 +620,7 @@ func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 	}
 	hoistSharedPathParameters(paths)
 	openapiDocument := OpenAPIV3Document{
-		OpenAPI: "3.0.0",
+		OpenAPI: "3.1.0",
 		Info: &OpenAPIV3Info{
 			Version: "1.0.0", // This should be set to the actual version of your API
 		},
@@ -932,24 +975,22 @@ var jsonSchemaSimpleTypeToString = map[options.JSONSchema_JSONSchemaSimpleTypes]
 // json_schema: {type: STRING}) so the body contract is preserved.
 func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
 	s := &OpenAPIV3Schema{
-		Title:            js.Title,
-		Description:      js.Description,
-		Format:           js.Format,
-		Pattern:          js.Pattern,
-		Enum:             js.Enum,
-		Required:         js.Required,
-		Maximum:          js.Maximum,
-		Minimum:          js.Minimum,
-		ExclusiveMaximum: js.ExclusiveMaximum,
-		ExclusiveMinimum: js.ExclusiveMinimum,
-		MultipleOf:       js.MultipleOf,
-		MaxLength:        js.MaxLength,
-		MaxItems:         js.MaxItems,
-		UniqueItems:      js.UniqueItems,
-		MaxProperties:    js.MaxProperties,
-		MinProperties:    js.MinProperties,
-		ReadOnly:         js.ReadOnly,
+		Title:         js.Title,
+		Description:   js.Description,
+		Format:        js.Format,
+		Pattern:       js.Pattern,
+		Enum:          js.Enum,
+		Required:      js.Required,
+		MultipleOf:    js.MultipleOf,
+		MaxLength:     js.MaxLength,
+		MaxItems:      js.MaxItems,
+		UniqueItems:   js.UniqueItems,
+		MaxProperties: js.MaxProperties,
+		MinProperties: js.MinProperties,
+		ReadOnly:      js.ReadOnly,
 	}
+	s.Maximum, s.ExclusiveMaximum = resolveMaximum(js.Maximum, js.ExclusiveMaximum)
+	s.Minimum, s.ExclusiveMinimum = resolveMinimum(js.Minimum, js.ExclusiveMinimum)
 	if len(js.Type) > 0 {
 		s.Type = jsonSchemaSimpleTypeToString[js.Type[0]]
 	}
@@ -965,7 +1006,7 @@ func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
 		s.Default = RawExample(js.Default)
 	}
 	if js.Example != "" {
-		s.Example = RawExample(js.Example)
+		s.Examples = examplesOf(RawExample(js.Example))
 	}
 	return s
 }
@@ -1001,7 +1042,7 @@ func defaultErrorSchema() *OpenAPIV3Schema {
 				Format:      "int32",
 				Description: "HTTP status code of the error (for example 400, 404, 500).",
 				Minimum:     float64Ptr(100),
-				Maximum:     599,
+				Maximum:     float64Ptr(599),
 			}},
 			"message": {OpenAPIV3Schema: &OpenAPIV3Schema{
 				Type:        "string",
@@ -1965,7 +2006,7 @@ func buildEnumSchemas(param param, resolvedNames map[string]string) map[string]*
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             example,
+			Examples:            examplesOf(example),
 			OpenAPIV3Extensions: extensions,
 		}}
 		schemas[resolvedNames[enum.FQEN()]] = enumSchema
@@ -2324,7 +2365,7 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 			Items: itemSchema,
 		}
 		if example != nil {
-			schema.Example = example
+			schema.Examples = examplesOf(example)
 		}
 		// Always emit minItems on arrays (default 0). proto3 cannot express an
 		// explicit 0, so an array with no min_items annotation still gets
@@ -2389,6 +2430,11 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			valueSchema = fieldExtension.ValueSchema
 		}
 	}
+	// Resolve the 3.0-style (bound + exclusive-bool) annotations into the JSON
+	// Schema 2020-12 (OpenAPI 3.1) numeric form once, reused across type branches.
+	maximumPtr, exclusiveMaximumPtr := resolveMaximum(maximum, exclusiveMaximum)
+	minimumPtr, exclusiveMinimumPtr := resolveMinimum(minimum, exclusiveMinimum)
+	unsignedMinimumPtr, unsignedExclusiveMinimumPtr := resolveUnsignedMinimum(minimum, exclusiveMinimum)
 	isArrayOrMapElement := false
 	if jsonExample != "" {
 		isArrayOrMapElement = jsonExample[0:1] == "[" || jsonExample[0:1] == "{"
@@ -2410,7 +2456,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_DOUBLE {
@@ -2427,15 +2473,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Type:                "number",
 			Format:              "double",
 			Title:               title,
-			Maximum:             maximum,
-			Minimum:             minimum,
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
+			Maximum:             maximumPtr,
+			Minimum:             minimumPtr,
+			ExclusiveMaximum:    exclusiveMaximumPtr,
+			ExclusiveMinimum:    exclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_FLOAT {
@@ -2452,15 +2498,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Type:                "number",
 			Format:              "float",
 			Title:               title,
-			Maximum:             maximum,
-			Minimum:             minimum,
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
+			Maximum:             maximumPtr,
+			Minimum:             minimumPtr,
+			ExclusiveMaximum:    exclusiveMaximumPtr,
+			ExclusiveMinimum:    exclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT32 {
@@ -2477,17 +2523,17 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Type:    "integer",
 			Format:  "int64",
 			Title:   title,
-			Maximum: maximum,
+			Maximum: maximumPtr,
 			// Unsigned integer: natural lower bound is 0, so emit minimum: 0 by
 			// default (ibm-integer-attributes). An override raises it.
-			Minimum:             unsignedMinimum(minimum),
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
+			Minimum:             unsignedMinimumPtr,
+			ExclusiveMaximum:    exclusiveMaximumPtr,
+			ExclusiveMinimum:    unsignedExclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 ||
@@ -2515,7 +2561,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 ||
@@ -2544,7 +2590,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT32 {
@@ -2561,15 +2607,15 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Type:                "integer",
 			Format:              "int32",
 			Title:               title,
-			Maximum:             maximum,
-			Minimum:             minimum,
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
+			Maximum:             maximumPtr,
+			Minimum:             minimumPtr,
+			ExclusiveMaximum:    exclusiveMaximumPtr,
+			ExclusiveMinimum:    exclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING {
@@ -2594,7 +2640,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			MaxLength:           maxLength,
 			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BYTES {
@@ -2617,7 +2663,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			MaxLength:           maxLength,
 			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
@@ -2669,16 +2715,17 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 				schemaCopy.MaxLength = stringIntMaxLength(maxLength)
 				schemaCopy.MinLength = stringIntMinLength(minLength)
 			} else {
-				schemaCopy.Maximum = maximum
+				schemaCopy.Maximum = maximumPtr
+				schemaCopy.ExclusiveMaximum = exclusiveMaximumPtr
 				if field.TypeName != nil && *field.TypeName == ".google.protobuf.UInt32Value" {
 					// Unsigned 32-bit wrapper renders as type: integer; emit
 					// minimum: 0 by default. An override raises the floor.
-					schemaCopy.Minimum = unsignedMinimum(minimum)
+					schemaCopy.Minimum = unsignedMinimumPtr
+					schemaCopy.ExclusiveMinimum = unsignedExclusiveMinimumPtr
 				} else {
-					schemaCopy.Minimum = minimum
+					schemaCopy.Minimum = minimumPtr
+					schemaCopy.ExclusiveMinimum = exclusiveMinimumPtr
 				}
-				schemaCopy.ExclusiveMaximum = exclusiveMaximum
-				schemaCopy.ExclusiveMinimum = exclusiveMinimum
 				schemaCopy.MultipleOf = multipleOf
 				schemaCopy.Pattern = pattern
 				schemaCopy.MaxLength = maxLength
@@ -2688,7 +2735,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 				}
 			}
 			schemaCopy.OpenAPIV3Extensions = extensions
-			schemaCopy.Example = fieldExample
+			schemaCopy.Examples = examplesOf(fieldExample)
 			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}, arrayExample
 		} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
 			fieldMessage, err := registry.LookupMsg(*field.TypeName, *field.TypeName)
@@ -2720,7 +2767,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 					Description:          description,
 					Deprecated:           deprecated,
 					ReadOnly:             readOnly,
-					Example:              mapExample,
+					Examples:             examplesOf(mapExample),
 					OpenAPIV3Extensions:  extensions,
 				}}, arrayExample
 			} else {
@@ -2839,7 +2886,7 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 			Items: propertySchema,
 		}
 		if example != nil {
-			schema.Example = example
+			schema.Examples = examplesOf(example)
 		}
 		// Always emit minItems on arrays (default 0). proto3 cannot express an
 		// explicit 0, so an array with no min_items annotation still gets
@@ -2900,6 +2947,11 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			valueSchema = fieldExtension.ValueSchema
 		}
 	}
+	// Resolve the 3.0-style (bound + exclusive-bool) annotations into the JSON
+	// Schema 2020-12 (OpenAPI 3.1) numeric form once, reused across type branches.
+	maximumPtr, exclusiveMaximumPtr := resolveMaximum(maximum, exclusiveMaximum)
+	minimumPtr, exclusiveMinimumPtr := resolveMinimum(minimum, exclusiveMinimum)
+	unsignedMinimumPtr, unsignedExclusiveMinimumPtr := resolveUnsignedMinimum(minimum, exclusiveMinimum)
 	isArrayOrMapElement := false
 	if jsonExample != "" {
 		isArrayOrMapElement = jsonExample[0:1] == "[" || jsonExample[0:1] == "{"
@@ -2922,7 +2974,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Title:               title,
 			Description:         description,
 			Deprecated:          deprecated,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_DOUBLE {
@@ -2939,15 +2991,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Type:                "number",
 			Format:              "double",
 			Title:               title,
-			Maximum:             maximum,
-			Minimum:             minimum,
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
+			Maximum:             maximumPtr,
+			Minimum:             minimumPtr,
+			ExclusiveMaximum:    exclusiveMaximumPtr,
+			ExclusiveMinimum:    exclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT32 {
@@ -2964,17 +3016,17 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Type:    "integer",
 			Format:  "int64",
 			Title:   title,
-			Maximum: maximum,
+			Maximum: maximumPtr,
 			// Unsigned integer: natural lower bound is 0, so emit minimum: 0 by
 			// default (ibm-integer-attributes). An override raises it.
-			Minimum:             unsignedMinimum(minimum),
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
+			Minimum:             unsignedMinimumPtr,
+			ExclusiveMaximum:    exclusiveMaximumPtr,
+			ExclusiveMinimum:    unsignedExclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_UINT64 ||
@@ -3002,7 +3054,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT64 ||
@@ -3031,7 +3083,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_FLOAT {
@@ -3048,15 +3100,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Type:                "number",
 			Format:              "float",
 			Title:               title,
-			Maximum:             maximum,
-			Minimum:             minimum,
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
+			Maximum:             maximumPtr,
+			Minimum:             minimumPtr,
+			ExclusiveMaximum:    exclusiveMaximumPtr,
+			ExclusiveMinimum:    exclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_INT32 {
@@ -3073,15 +3125,15 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Type:                "integer",
 			Format:              "int32",
 			Title:               title,
-			Maximum:             maximum,
-			Minimum:             minimum,
-			ExclusiveMaximum:    exclusiveMaximum,
-			ExclusiveMinimum:    exclusiveMinimum,
+			Maximum:             maximumPtr,
+			Minimum:             minimumPtr,
+			ExclusiveMaximum:    exclusiveMaximumPtr,
+			ExclusiveMinimum:    exclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_STRING {
@@ -3106,7 +3158,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			MaxLength:           maxLength,
 			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_BYTES {
@@ -3129,7 +3181,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			MaxLength:           maxLength,
 			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
-			Example:             fieldExample,
+			Examples:            examplesOf(fieldExample),
 			OpenAPIV3Extensions: extensions,
 		}}, arrayExample
 	} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
@@ -3179,16 +3231,17 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 				schemaCopy.MaxLength = stringIntMaxLength(maxLength)
 				schemaCopy.MinLength = stringIntMinLength(minLength)
 			} else {
-				schemaCopy.Maximum = maximum
+				schemaCopy.Maximum = maximumPtr
+				schemaCopy.ExclusiveMaximum = exclusiveMaximumPtr
 				if field.TypeName != nil && *field.TypeName == ".google.protobuf.UInt32Value" {
 					// Unsigned 32-bit wrapper renders as type: integer; emit
 					// minimum: 0 by default. An override raises the floor.
-					schemaCopy.Minimum = unsignedMinimum(minimum)
+					schemaCopy.Minimum = unsignedMinimumPtr
+					schemaCopy.ExclusiveMinimum = unsignedExclusiveMinimumPtr
 				} else {
-					schemaCopy.Minimum = minimum
+					schemaCopy.Minimum = minimumPtr
+					schemaCopy.ExclusiveMinimum = exclusiveMinimumPtr
 				}
-				schemaCopy.ExclusiveMaximum = exclusiveMaximum
-				schemaCopy.ExclusiveMinimum = exclusiveMinimum
 				schemaCopy.MultipleOf = multipleOf
 				schemaCopy.Pattern = pattern
 				schemaCopy.MaxLength = maxLength
@@ -3198,7 +3251,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 				}
 			}
 			schemaCopy.OpenAPIV3Extensions = extensions
-			schemaCopy.Example = fieldExample
+			schemaCopy.Examples = examplesOf(fieldExample)
 			return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}, arrayExample
 		} else if *field.Type == descriptorpb.FieldDescriptorProto_TYPE_MESSAGE {
 			schema := &OpenAPIV3Schema{
@@ -3232,7 +3285,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 					Description:          description,
 					Deprecated:           deprecated,
 					ReadOnly:             readOnly,
-					Example:              mapExample,
+					Examples:             examplesOf(mapExample),
 					OpenAPIV3Extensions:  extensions,
 				}}, arrayExample
 			}
