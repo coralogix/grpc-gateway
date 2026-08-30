@@ -374,14 +374,14 @@ func resolveMinimum(minimum *float64, exclusive bool) (*float64, *float64) {
 	return minimum, nil
 }
 
-// resolveUnsignedMinimum is resolveMinimum for unsigned integers, whose natural
-// lower bound is 0: unless an exclusive minimum is explicitly annotated, it
-// keeps the default minimum: 0 (via unsignedMinimum).
+// resolveUnsignedMinimum clamps to the unsigned floor of 0 first (an absent or
+// negative value becomes 0), then emits the effective bound as exclusive or not.
 func resolveUnsignedMinimum(minimum *float64, exclusive bool) (*float64, *float64) {
-	if exclusive && minimum != nil {
-		return nil, minimum
+	effective := unsignedMinimum(minimum)
+	if exclusive {
+		return nil, effective
 	}
-	return unsignedMinimum(minimum), nil
+	return effective, nil
 }
 
 // applyValueSchema merges map field value_schema overrides into the generated
@@ -410,13 +410,21 @@ func applyValueSchemaForMapValue(additionalPropertiesSchema *OpenAPIV3SchemaRef,
 		if valueSchema.MultipleOf != 0 {
 			schema.MultipleOf = valueSchema.MultipleOf
 		}
+		// Apply the override to the inclusive bound (minimum only raises the floor),
+		// then convert to the numeric exclusive form against the effective bound.
 		if valueSchema.Maximum != 0 {
-			schema.Maximum, schema.ExclusiveMaximum = resolveMaximum(valueSchema.Maximum, valueSchema.ExclusiveMaximum)
+			schema.Maximum = float64Ptr(valueSchema.Maximum)
 		}
-		if valueSchema.Minimum != nil {
-			if schema.Minimum == nil || *valueSchema.Minimum >= *schema.Minimum {
-				schema.Minimum, schema.ExclusiveMinimum = resolveMinimum(valueSchema.Minimum, valueSchema.ExclusiveMinimum)
-			}
+		if valueSchema.Minimum != nil && (schema.Minimum == nil || *valueSchema.Minimum >= *schema.Minimum) {
+			schema.Minimum = valueSchema.Minimum
+		}
+		if valueSchema.ExclusiveMaximum && schema.Maximum != nil {
+			schema.ExclusiveMaximum = schema.Maximum
+			schema.Maximum = nil
+		}
+		if valueSchema.ExclusiveMinimum && schema.Minimum != nil {
+			schema.ExclusiveMinimum = schema.Minimum
+			schema.Minimum = nil
 		}
 	case "string":
 		if valueSchema.MaxLength != 0 {

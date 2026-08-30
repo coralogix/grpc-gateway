@@ -4907,6 +4907,60 @@ func TestExclusiveBounds_NumericFormForOpenAPI31(t *testing.T) {
 	})
 }
 
+// Unsigned integers clamp the exclusive lower bound to their natural floor of 0:
+// exclusive_minimum with no minimum, or a negative one, must emit
+// exclusiveMinimum: 0 — never an inclusive minimum: 0 and never a negative bound.
+func TestExclusiveBounds_UnsignedClampedToZero(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		js   *options.JSONSchema
+	}{
+		{"no minimum", &options.JSONSchema{ExclusiveMinimum: true}},
+		{"negative minimum", &options.JSONSchema{ExclusiveMinimum: true, Minimum: proto.Float64(-5)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT32, tc.js)
+			withRefs, plain := inlineSchemasBothSwitches(t, field)
+			for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+				if s.Minimum != nil {
+					t.Errorf("expected no inclusive minimum on unsigned exclusive bound, got %v", *s.Minimum)
+				}
+				if s.ExclusiveMinimum == nil || *s.ExclusiveMinimum != 0 {
+					t.Errorf("expected exclusiveMinimum=0 (clamped to unsigned floor), got %v", s.ExclusiveMinimum)
+				}
+			}
+		})
+	}
+}
+
+// An unsigned map value keeps its generated minimum: 0 floor; a value_schema
+// exclusive_minimum must convert that effective floor to exclusiveMinimum: 0
+// even when the override minimum is absent or a rejected negative.
+func TestApplyValueSchema_UnsignedExclusiveMinimumClampedToZero(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		vs   *options.JSONSchema
+	}{
+		{"no minimum", &options.JSONSchema{ExclusiveMinimum: true}},
+		{"negative minimum", &options.JSONSchema{ExclusiveMinimum: true, Minimum: proto.Float64(-1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+				Type:    "integer",
+				Format:  "int64",
+				Minimum: proto.Float64(0), // generated unsigned floor
+			}}, tc.vs, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_UINT32, nil), "")
+			s := got.OpenAPIV3Schema
+			if s.Minimum != nil {
+				t.Errorf("expected the inclusive minimum to be dropped, got %v", *s.Minimum)
+			}
+			if s.ExclusiveMinimum == nil || *s.ExclusiveMinimum != 0 {
+				t.Errorf("expected exclusiveMinimum=0 against the effective floor, got %v", s.ExclusiveMinimum)
+			}
+		})
+	}
+}
+
 func TestMinimum_SignedIntExplicitZeroSchemaProperty(t *testing.T) {
 	field := makeSingularFieldWithExtension("page_offset", descriptorpb.FieldDescriptorProto_TYPE_INT32, &options.JSONSchema{
 		Description: "Zero-based page offset.",
