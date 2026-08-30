@@ -1582,6 +1582,40 @@ func generateMergedSpec(t *testing.T, reqText string) string {
 	return resp[0].GetContent()
 }
 
+// Operations that don't annotate openapiv3_operation.external_docs must not emit
+// an externalDocs object at all. Previously the generator initialized it to a
+// non-nil empty value, producing externalDocs: {url: ""} on every operation —
+// invalid under 3.1, where externalDocs.url must be a valid uri.
+func TestOperationExternalDocs_OmittedWhenUnannotated(t *testing.T) {
+	spec := generateMergedSpec(t, deterministicSpecRequest)
+	var doc struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(spec), &doc); err != nil {
+		t.Fatalf("unmarshal spec: %v", err)
+	}
+	methods := map[string]bool{"get": true, "put": true, "post": true, "delete": true, "patch": true}
+	operations := 0
+	for path, item := range doc.Paths {
+		for method, raw := range item {
+			if !methods[method] {
+				continue
+			}
+			operations++
+			var op map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &op); err != nil {
+				t.Fatalf("unmarshal %s %s: %v", method, path, err)
+			}
+			if _, has := op["externalDocs"]; has {
+				t.Errorf("%s %s: unannotated operation must not emit externalDocs, got %s", method, path, op["externalDocs"])
+			}
+		}
+	}
+	if operations == 0 {
+		t.Fatal("expected the fixture to produce operations")
+	}
+}
+
 // TestGeneratedSpecIsDeterministic asserts the same protos produce the exact same
 // OpenAPI spec on every generation — byte-for-byte, across the whole document
 // (paths, schemas, tags, everything), not just the tags array.

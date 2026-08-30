@@ -750,7 +750,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				operationID := fmt.Sprintf("%s_%s", svc.GetName(), m.GetName())
 				deprecated := false
 				responses := OpenAPIV3Responses{}
-				externalDocs := &OpenAPIV3ExternalDocs{}
+				var externalDocs *OpenAPIV3ExternalDocs
 				extensions := OpenAPIV3Extensions{}
 				var description string
 				var successResponseExamples map[string]string
@@ -777,7 +777,11 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 						if successResp, ok := operation.GetResponses()[successStatusCode]; ok && successResp != nil {
 							successResponseExamples = successResp.GetExamples()
 						}
-						if operation.ExternalDocs != nil && operation.ExternalDocs.Description != "" && operation.ExternalDocs.Url != "" {
+						// Emit externalDocs only when a real url is present (url is the
+						// required field; description is optional). Otherwise it stays
+						// nil and omitempty drops it, so operations without the
+						// annotation don't emit an invalid externalDocs: {url: ""}.
+						if operation.ExternalDocs != nil && operation.ExternalDocs.Url != "" {
 							externalDocs = &OpenAPIV3ExternalDocs{
 								Description: operation.ExternalDocs.Description,
 								URL:         operation.ExternalDocs.Url,
@@ -1195,10 +1199,14 @@ func buildTags(param param) ([]OpenAPIV3Tag, error) {
 			openapiV3Tag := OpenAPIV3Tag{
 				Name:        tag.GetName(),
 				Description: tag.GetDescription(),
-				ExternalDocs: &OpenAPIV3ExternalDocs{
-					Description: tag.GetExternalDocs().GetDescription(),
-					URL:         tag.GetExternalDocs().GetUrl(),
-				},
+			}
+			// Emit externalDocs only when a real url is present, so tags without
+			// the annotation don't emit an invalid externalDocs: {url: ""}.
+			if ed := tag.GetExternalDocs(); ed.GetUrl() != "" {
+				openapiV3Tag.ExternalDocs = &OpenAPIV3ExternalDocs{
+					Description: ed.GetDescription(),
+					URL:         ed.GetUrl(),
+				}
 			}
 			openApiV3TagSet[tag.GetName()] = openapiV3Tag
 		}
