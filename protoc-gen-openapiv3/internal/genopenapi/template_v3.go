@@ -725,6 +725,29 @@ func checkDuplicatePath(
 	return nil
 }
 
+const (
+	// stabilityExtensionKey is the vendor extension carrying the API maturity
+	// marker. Only experimental surfaces are marked; an absent key means stable.
+	stabilityExtensionKey = "x-stability"
+	stabilityExperimental = "experimental"
+)
+
+// resolveStability returns the effective stability for a method: its own
+// annotation if set, otherwise the service default from openapiv3_tag,
+// otherwise stable. Both fields have explicit presence, so an explicit
+// STABILITY_STABLE on an RPC overrides an experimental service.
+func resolveStability(svc *descriptor.Service, op *options.Operation) options.Stability {
+	if op.HasStability() {
+		return op.GetStability()
+	}
+	if svc != nil && proto.HasExtension(svc.Options, options.E_Openapiv3Tag) {
+		if tag, ok := proto.GetExtension(svc.Options, options.E_Openapiv3Tag).(*options.Tag); ok && tag.HasStability() {
+			return tag.GetStability()
+		}
+	}
+	return options.Stability_STABILITY_STABLE
+}
+
 func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV3Paths, map[string]*OpenAPIV3SchemaRef, error) {
 	paths := OpenAPIV3Paths{}
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
@@ -781,9 +804,11 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				extensions := OpenAPIV3Extensions{}
 				var description string
 				var successResponseExamples map[string]string
+				var operationExt *options.Operation
 				if proto.HasExtension(m.Options, options.E_Openapiv3Operation) {
 					operation, ok := proto.GetExtension(m.Options, options.E_Openapiv3Operation).(*options.Operation)
 					if ok {
+						operationExt = operation
 						tags = operation.Tags
 						if operation.Summary != "" {
 							summary = operation.Summary
@@ -815,6 +840,14 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 							}
 						}
 					}
+				}
+				// Applied after the annotation block: the typed stability field owns
+				// the "x-stability" key, so it overrides a hand-written entry in the
+				// extensions map in both directions.
+				if resolveStability(svc, operationExt) == options.Stability_STABILITY_EXPERIMENTAL {
+					extensions[stabilityExtensionKey] = stabilityExperimental
+				} else {
+					delete(extensions, stabilityExtensionKey)
 				}
 				path := applyPathParamRenames(sanitizeURLPath(b.PathTmpl.Template), buildPathParamRenames(b, param.reg))
 				httpMethod := b.HTTPMethod

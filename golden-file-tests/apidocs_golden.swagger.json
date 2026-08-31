@@ -427,7 +427,8 @@
         "summary": "Replace Thing",
         "tags": [
           "Things Service"
-        ]
+        ],
+        "x-stability": "experimental"
       },
       "delete": {
         "operationId": "ThingService_DeleteThing",

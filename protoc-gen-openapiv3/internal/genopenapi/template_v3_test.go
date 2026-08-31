@@ -5696,3 +5696,230 @@ func TestHoistSharedPathParameters(t *testing.T) {
 		}
 	})
 }
+
+// stabilitySpecRequest exercises every branch of the stability resolution:
+// a service marked experimental (with one RPC opting back out to stable), a
+// service with no stability on its tag (with one RPC opting in), and a service
+// with no openapiv3_tag annotation at all.
+const stabilitySpecRequest = `
+file_to_generate: "lab/v1/lab.proto"
+proto_file: {
+  name: "lab/v1/lab.proto"
+  package: "lab.v1"
+  message_type: { name: "Empty" }
+  service: {
+    name: "AlphaService"
+    method: { name: "Inherit" input_type: ".lab.v1.Empty" output_type: ".lab.v1.Empty" options: { [google.api.http]: { get: "/v1/alpha/inherit" } } }
+    method: {
+      name: "OptOut" input_type: ".lab.v1.Empty" output_type: ".lab.v1.Empty"
+      options: {
+        [google.api.http]: { get: "/v1/alpha/opt-out" }
+        [grpc.gateway.protoc_gen_openapiv3.options.openapiv3_operation]: { stability: STABILITY_STABLE }
+      }
+    }
+    options: { [grpc.gateway.protoc_gen_openapiv3.options.openapiv3_tag]: { name: "Alpha" stability: STABILITY_EXPERIMENTAL } }
+  }
+  service: {
+    name: "BetaService"
+    method: { name: "Plain" input_type: ".lab.v1.Empty" output_type: ".lab.v1.Empty" options: { [google.api.http]: { get: "/v1/beta/plain" } } }
+    method: {
+      name: "OptIn" input_type: ".lab.v1.Empty" output_type: ".lab.v1.Empty"
+      options: {
+        [google.api.http]: { get: "/v1/beta/opt-in" }
+        [grpc.gateway.protoc_gen_openapiv3.options.openapiv3_operation]: { stability: STABILITY_EXPERIMENTAL }
+      }
+    }
+    options: { [grpc.gateway.protoc_gen_openapiv3.options.openapiv3_tag]: { name: "Beta" } }
+  }
+  service: {
+    name: "GammaService"
+    method: { name: "Bare" input_type: ".lab.v1.Empty" output_type: ".lab.v1.Empty" options: { [google.api.http]: { get: "/v1/gamma/bare" } } }
+    method: {
+      name: "RawWins" input_type: ".lab.v1.Empty" output_type: ".lab.v1.Empty"
+      options: {
+        [google.api.http]: { get: "/v1/gamma/raw-experimental" }
+        [grpc.gateway.protoc_gen_openapiv3.options.openapiv3_operation]: {
+          stability: STABILITY_EXPERIMENTAL
+          extensions: { key: "x-stability" value: { string_value: "handwritten" } }
+        }
+      }
+    }
+    method: {
+      name: "RawStripped" input_type: ".lab.v1.Empty" output_type: ".lab.v1.Empty"
+      options: {
+        [google.api.http]: { get: "/v1/gamma/raw-stable" }
+        [grpc.gateway.protoc_gen_openapiv3.options.openapiv3_operation]: {
+          extensions: { key: "x-stability" value: { string_value: "handwritten" } }
+          extensions: { key: "x-other" value: { string_value: "kept" } }
+        }
+      }
+    }
+  }
+  options: { go_package: "example.com/lab/v1;labv1" }
+  syntax: "proto3"
+}
+`
+
+// TestStability_EndToEnd generates a real spec and asserts x-stability lands on
+// exactly the experimental operations and nowhere else.
+func TestStability_EndToEnd(t *testing.T) {
+	spec := generateMergedSpec(t, stabilitySpecRequest)
+
+	var doc struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(spec), &doc); err != nil {
+		t.Fatalf("unmarshal spec: %v", err)
+	}
+
+	for _, tc := range []struct {
+		path string
+		want string // "" means the key must be absent
+		why  string
+	}{
+		{"/v1/alpha/inherit", "experimental", "inherits the experimental service default"},
+		{"/v1/alpha/opt-out", "", "explicit STABILITY_STABLE overrides the experimental service"},
+		{"/v1/beta/plain", "", "no annotation anywhere"},
+		{"/v1/beta/opt-in", "experimental", "explicit STABILITY_EXPERIMENTAL on the RPC"},
+		{"/v1/gamma/bare", "", "service has no openapiv3_tag at all"},
+		{"/v1/gamma/raw-experimental", "experimental", "typed field overrides a hand-written x-stability extension"},
+		{"/v1/gamma/raw-stable", "", "typed field is stable, so a hand-written x-stability is stripped"},
+	} {
+		item, ok := doc.Paths[tc.path]
+		if !ok {
+			t.Fatalf("path %s missing from generated spec", tc.path)
+		}
+		var op map[string]any
+		if err := json.Unmarshal(item["get"], &op); err != nil {
+			t.Fatalf("%s: unmarshal operation: %v", tc.path, err)
+		}
+		got, present := op["x-stability"]
+		switch {
+		case tc.want == "" && present:
+			t.Errorf("%s: x-stability = %v, want absent (%s)", tc.path, got, tc.why)
+		case tc.want != "" && !present:
+			t.Errorf("%s: x-stability absent, want %q (%s)", tc.path, tc.want, tc.why)
+		case tc.want != "" && got != tc.want:
+			t.Errorf("%s: x-stability = %v, want %q (%s)", tc.path, got, tc.want, tc.why)
+		}
+	}
+
+	// Stripping x-stability must not touch any other hand-written extension.
+	var op map[string]any
+	if err := json.Unmarshal(doc.Paths["/v1/gamma/raw-stable"]["get"], &op); err != nil {
+		t.Fatalf("unmarshal operation: %v", err)
+	}
+	if op["x-other"] != "kept" {
+		t.Errorf("x-other = %v, want \"kept\" — unrelated extensions must survive", op["x-other"])
+	}
+}
+
+// serviceWithStability builds a descriptor.Service carrying an openapiv3_tag
+// option, optionally with a stability default.
+func serviceWithStability(t *testing.T, tag *options.Tag) *descriptor.Service {
+	t.Helper()
+	svc := &descriptor.Service{ServiceDescriptorProto: &descriptorpb.ServiceDescriptorProto{
+		Name:    proto.String("Svc"),
+		Options: &descriptorpb.ServiceOptions{},
+	}}
+	if tag != nil {
+		proto.SetExtension(svc.Options, options.E_Openapiv3Tag, tag)
+	}
+	return svc
+}
+
+func TestResolveStability(t *testing.T) {
+	experimental := options.Stability_STABILITY_EXPERIMENTAL
+	stable := options.Stability_STABILITY_STABLE
+
+	for _, tc := range []struct {
+		name string
+		tag  *options.Tag
+		op   *options.Operation
+		want options.Stability
+	}{
+		{"no service option, no operation", nil, nil, stable},
+		{"service tag without stability", &options.Tag{Name: "Svc"}, nil, stable},
+		{"operation nil, service experimental", &options.Tag{Stability: &experimental}, nil, experimental},
+		{"operation without stability, service experimental", &options.Tag{Stability: &experimental}, &options.Operation{}, experimental},
+		{"operation stable overrides experimental service", &options.Tag{Stability: &experimental}, &options.Operation{Stability: &stable}, stable},
+		{"operation experimental, no service default", nil, &options.Operation{Stability: &experimental}, experimental},
+		{"operation experimental overrides stable service", &options.Tag{Stability: &stable}, &options.Operation{Stability: &experimental}, experimental},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := resolveStability(serviceWithStability(t, tc.tag), tc.op); got != tc.want {
+				t.Errorf("resolveStability() = %v, want %v", got, tc.want)
+			}
+		})
+	}
+
+	t.Run("nil service", func(t *testing.T) {
+		if got := resolveStability(nil, nil); got != stable {
+			t.Errorf("resolveStability(nil, nil) = %v, want %v", got, stable)
+		}
+	})
+}
+
+// TestOperationExtensionsAreMarshaled pins the serialization contract the
+// stability marker rides on: extensions live in a map tagged json:"-" and only
+// reach the output through OpenAPIV3Operation.MarshalJSON.
+func TestOperationExtensionsAreMarshaled(t *testing.T) {
+	op := OpenAPIV3Operation{
+		OperationID:         "Svc_Method",
+		OpenAPIV3Extensions: OpenAPIV3Extensions{stabilityExtensionKey: stabilityExperimental},
+	}
+	b, err := json.Marshal(op)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(b, &got); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if got["x-stability"] != "experimental" {
+		t.Errorf("x-stability = %v, want %q; full JSON: %s", got["x-stability"], "experimental", b)
+	}
+	if got["operationId"] != "Svc_Method" {
+		t.Errorf("operationId = %v, want Svc_Method", got["operationId"])
+	}
+}
+
+// TestStability_YAMLOutput guards the YAML path: extensions are tagged yaml:"-"
+// and the YAML encoder never calls MarshalJSON, so without OpenAPIV3Operation's
+// MarshalYAML the stability marker would silently vanish from --output_format=yaml.
+func TestStability_YAMLOutput(t *testing.T) {
+	var req pluginpb.CodeGeneratorRequest
+	if err := prototext.Unmarshal([]byte(stabilitySpecRequest), &req); err != nil {
+		t.Fatalf("prototext.Unmarshal: %v", err)
+	}
+	reg := descriptor.NewRegistry()
+	reg.SetAllowMerge(true)
+	reg.SetMergeFileName("apidocs")
+	if err := AddErrorDefs(reg); err != nil {
+		t.Fatalf("AddErrorDefs: %v", err)
+	}
+	if err := reg.Load(&req); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+	f, err := reg.LookupFile("lab/v1/lab.proto")
+	if err != nil {
+		t.Fatalf("LookupFile: %v", err)
+	}
+	resp, err := New(reg, FormatYAML).Generate([]*descriptor.File{f})
+	if err != nil {
+		t.Fatalf("Generate: %v", err)
+	}
+	spec := resp[0].GetContent()
+
+	if !strings.Contains(spec, "x-stability: experimental") {
+		t.Errorf("YAML output is missing `x-stability: experimental`:\n%s", spec)
+	}
+	// The two experimental operations, and only those.
+	if got := strings.Count(spec, "x-stability:"); got != 3 {
+		t.Errorf("x-stability appears %d times, want 3 (two experimental RPCs + one raw-override RPC)", got)
+	}
+	// structpb values must be unwrapped, not serialized as their internal form.
+	if !strings.Contains(spec, "x-other: kept") {
+		t.Errorf("YAML output is missing `x-other: kept` (structpb value not unwrapped):\n%s", spec)
+	}
+}

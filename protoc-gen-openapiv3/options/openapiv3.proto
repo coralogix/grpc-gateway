@@ -16,6 +16,15 @@ enum Scheme {
   WSS = 4;
 }
 
+// Stability marks the maturity of an API surface. STABLE is the zero value, so
+// only experimental surfaces need annotating. Experimental operations are
+// rendered with the `x-stability: experimental` extension; stable ones carry no
+// marker at all.
+enum Stability {
+  STABILITY_STABLE = 0;
+  STABILITY_EXPERIMENTAL = 1;
+}
+
 // `Swagger` is a representation of OpenAPI v2 specification's Swagger object.
 //
 // See: https://github.com/OAI/OpenAPI-Specification/blob/3.0.0/versions/2.0.md#swaggerObject
@@ -179,6 +188,10 @@ message Operation {
   // See: https://swagger.io/docs/specification/2-0/describing-parameters/
   // and https://swagger.io/specification/v2/#parameter-object.
   Parameters parameters = 14;
+  // Stability of this operation. Overrides the service-level default set on
+  // the `openapiv3_tag` option. Optional so an explicit STABILITY_STABLE can
+  // override an experimental service.
+  optional Stability stability = 15;
 }
 
 // `Parameters` is a representation of OpenAPI v2 specification's parameters object.
@@ -653,6 +666,9 @@ message Tag {
   // extra functionality that is not covered by the standard OpenAPI Specification.
   // See: https://swagger.io/docs/specification/2-0/swagger-extensions/
   map<string, google.protobuf.Value> extensions = 4;
+  // Default stability for every RPC in this service. Individual RPCs override
+  // it via the `stability` field on their `openapiv3_operation` option.
+  optional Stability stability = 5;
 }
 
 // `SecurityDefinitions` is a representation of OpenAPI v2 specification's
