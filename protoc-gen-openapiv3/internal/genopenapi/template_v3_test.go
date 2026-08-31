@@ -1765,6 +1765,197 @@ func newRequestBodyFixture(t *testing.T, fieldNames []string, required []string,
 	return binding
 }
 
+func newSelectedFieldBinding(field *descriptor.Field) *descriptor.Binding {
+	if field.Message == nil {
+		msg := &descriptor.Message{DescriptorProto: &descriptorpb.DescriptorProto{Name: proto.String("Parent")}}
+		field.Message = msg
+		msg.Fields = []*descriptor.Field{field}
+	}
+
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:       proto.String("UseSelectedField"),
+			InputType:  proto.String(".example.Parent"),
+			OutputType: proto.String(".example.Parent"),
+		},
+		RequestType:  field.Message,
+		ResponseType: field.Message,
+	}
+	fieldPath := descriptor.FieldPath{{Name: field.GetName(), Target: field}}
+	return &descriptor.Binding{
+		HTTPMethod:   "POST",
+		Body:         &descriptor.Body{FieldPath: fieldPath},
+		ResponseBody: &descriptor.Body{FieldPath: fieldPath},
+		Method:       method,
+	}
+}
+
+func TestBuildRequestBody_SelectedRepeatedMessageFieldUsesArray(t *testing.T) {
+	const description = "Users to create."
+	field, reg, resolvedNames := makeRepeatedMessageRefFieldWithExtension(t, "users", "CreateUserRequest", &options.JSONSchema{
+		Description: description,
+	})
+	elementMessage, err := reg.LookupMsg("", ".example.CreateUserRequest")
+	if err != nil {
+		t.Fatalf("LookupMsg CreateUserRequest: %v", err)
+	}
+	elementOptions := &descriptorpb.MessageOptions{}
+	proto.SetExtension(elementOptions, options.E_Openapiv3Schema, &options.Schema{
+		JsonSchema: &options.JSONSchema{Required: []string{"id"}},
+	})
+	elementMessage.Options = elementOptions
+
+	body, _ := buildRequestBody(newSelectedFieldBinding(field), map[string]*OpenAPIV3SchemaRef{}, reg, resolvedNames)
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	if !body.Required {
+		t.Fatal("selected repeated body did not preserve requestBody.required")
+	}
+	schema := body.Content["application/json"].Schema.OpenAPIV3Schema
+	if schema == nil || schema.Type != "array" {
+		t.Fatalf("selected repeated message body type = %v, want array", schema)
+	}
+	if schema.Description != description {
+		t.Fatalf("description = %q, want %q", schema.Description, description)
+	}
+	if schema.Items == nil || schema.Items.Ref != "#/components/schemas/CreateUserRequest" {
+		t.Fatalf("items = %#v, want CreateUserRequest reference", schema.Items)
+	}
+}
+
+func TestBuildRequestBody_SelectedRepeatedScalarFieldUsesArray(t *testing.T) {
+	field := makeRepeatedField("names", descriptorpb.FieldDescriptorProto_TYPE_STRING)
+
+	body, _ := buildRequestBody(newSelectedFieldBinding(field), map[string]*OpenAPIV3SchemaRef{}, descriptor.NewRegistry(), map[string]string{})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	schema := body.Content["application/json"].Schema.OpenAPIV3Schema
+	if schema == nil || schema.Type != "array" {
+		t.Fatalf("selected repeated scalar body type = %v, want array", schema)
+	}
+	if schema.Items == nil || schema.Items.OpenAPIV3Schema == nil || schema.Items.Type != "string" {
+		t.Fatalf("items = %#v, want string schema", schema.Items)
+	}
+}
+
+func TestBuildRequestBody_SelectedNestedRepeatedFieldUsesArray(t *testing.T) {
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	messageType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	stringType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	itemTypeName := ".example.Item"
+	batchTypeName := ".example.Batch"
+
+	item := &descriptorpb.DescriptorProto{
+		Name: proto.String("Item"),
+		Field: []*descriptorpb.FieldDescriptorProto{{
+			Name: proto.String("id"), Number: proto.Int32(1), Label: &optional, Type: &stringType,
+		}},
+	}
+	batch := &descriptorpb.DescriptorProto{
+		Name: proto.String("Batch"),
+		Field: []*descriptorpb.FieldDescriptorProto{{
+			Name: proto.String("items"), Number: proto.Int32(1), Label: &repeated, Type: &messageType, TypeName: &itemTypeName,
+		}},
+	}
+	parent := &descriptorpb.DescriptorProto{
+		Name: proto.String("Parent"),
+		Field: []*descriptorpb.FieldDescriptorProto{{
+			Name: proto.String("batch"), Number: proto.Int32(1), Label: &optional, Type: &messageType, TypeName: &batchTypeName,
+		}},
+	}
+	file := &descriptorpb.FileDescriptorProto{
+		Name: proto.String("nested_repeated_body.proto"), Package: proto.String("example"), Syntax: proto.String("proto3"),
+		Options:     &descriptorpb.FileOptions{GoPackage: proto.String("example.com/path/to/example;example")},
+		MessageType: []*descriptorpb.DescriptorProto{parent, batch, item},
+	}
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{ProtoFile: []*descriptorpb.FileDescriptorProto{file}}); err != nil {
+		t.Fatalf("reg.Load: %v", err)
+	}
+	parentMessage, err := reg.LookupMsg("", ".example.Parent")
+	if err != nil {
+		t.Fatalf("LookupMsg Parent: %v", err)
+	}
+	batchMessage, err := reg.LookupMsg("", batchTypeName)
+	if err != nil {
+		t.Fatalf("LookupMsg Batch: %v", err)
+	}
+	method := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{Name: proto.String("UseItems")},
+		RequestType:           parentMessage,
+		ResponseType:          parentMessage,
+	}
+	binding := &descriptor.Binding{
+		HTTPMethod: "POST",
+		Method:     method,
+		Body: &descriptor.Body{FieldPath: descriptor.FieldPath{
+			{Name: "batch", Target: parentMessage.Fields[0]},
+			{Name: "items", Target: batchMessage.Fields[0]},
+		}},
+	}
+
+	body, _ := buildRequestBody(binding, map[string]*OpenAPIV3SchemaRef{}, reg, map[string]string{itemTypeName: "Item"})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	schema := body.Content["application/json"].Schema.OpenAPIV3Schema
+	if schema == nil || schema.Type != "array" || schema.Items == nil || schema.Items.Ref != "#/components/schemas/Item" {
+		t.Fatalf("nested body schema = %#v, want array of Item references", schema)
+	}
+}
+
+func TestBuildRequestBody_SelectedSingularMessageFieldStaysObject(t *testing.T) {
+	field, reg, resolvedNames := makeMessageRefFieldWithExtension(t, "user", "CreateUserRequest", nil)
+
+	body, _ := buildRequestBody(newSelectedFieldBinding(field), map[string]*OpenAPIV3SchemaRef{}, reg, resolvedNames)
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	schema := body.Content["application/json"].Schema.OpenAPIV3Schema
+	if schema == nil || schema.Type != "object" {
+		t.Fatalf("selected singular message body type = %v, want object", schema)
+	}
+	if _, ok := schema.Properties["id"]; !ok {
+		t.Fatalf("properties = %#v, want id", schema.Properties)
+	}
+}
+
+func TestBuildRequestBody_SelectedMapFieldStaysObject(t *testing.T) {
+	field, reg := makeMapFieldWithExtension(t, "labels", descriptorpb.FieldDescriptorProto_TYPE_STRING, nil)
+
+	body, _ := buildRequestBody(newSelectedFieldBinding(field), map[string]*OpenAPIV3SchemaRef{}, reg, map[string]string{})
+	if body == nil || body.OpenAPIV3RequestBody == nil {
+		t.Fatal("expected non-nil request body")
+	}
+	schema := body.Content["application/json"].Schema.OpenAPIV3Schema
+	if schema == nil || schema.Type != "object" {
+		t.Fatalf("selected map body type = %v, want object", schema)
+	}
+}
+
+func TestBuildResponseBody_SelectedRepeatedFieldsUseArrays(t *testing.T) {
+	t.Run("message", func(t *testing.T) {
+		field, reg, resolvedNames := makeRepeatedMessageRefFieldWithExtension(t, "users", "User", nil)
+		response := buildResponseBody(newSelectedFieldBinding(field), reg, resolvedNames)
+		schema := response.Content["application/json"].Schema.OpenAPIV3Schema
+		if schema == nil || schema.Type != "array" || schema.Items == nil || schema.Items.Ref != "#/components/schemas/User" {
+			t.Fatalf("response schema = %#v, want array of User references", schema)
+		}
+	})
+
+	t.Run("scalar", func(t *testing.T) {
+		field := makeRepeatedField("names", descriptorpb.FieldDescriptorProto_TYPE_STRING)
+		response := buildResponseBody(newSelectedFieldBinding(field), descriptor.NewRegistry(), map[string]string{})
+		schema := response.Content["application/json"].Schema.OpenAPIV3Schema
+		if schema == nil || schema.Type != "array" || schema.Items == nil || schema.Items.Type != "string" {
+			t.Fatalf("response schema = %#v, want array of strings", schema)
+		}
+	})
+}
+
 // TestBuildRequestBody_RequiredSetWhenBodyHasRequiredProperties verifies that
 // when the request body schema has required properties, requestBody.required
 // is set to true. This is the fix for ibm-no-required-properties-in-optional-body.

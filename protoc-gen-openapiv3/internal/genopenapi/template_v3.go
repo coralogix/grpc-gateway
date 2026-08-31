@@ -530,6 +530,25 @@ func isRepeatedField(field *descriptor.Field) bool {
 	return field.Label != nil && *field.Label == descriptorpb.FieldDescriptorProto_LABEL_REPEATED
 }
 
+// selectedRepeatedBodySchema returns the schema for a body-bound repeated
+// field. Protobuf map fields also use LABEL_REPEATED, but their JSON schema is
+// an object, so they stay on the existing object-body path.
+func selectedRepeatedBodySchema(body *descriptor.Body, registry *descriptor.Registry, resolvedNames map[string]string) *OpenAPIV3SchemaRef {
+	if body == nil || len(body.FieldPath) == 0 {
+		return nil
+	}
+	targetField := body.FieldPath[len(body.FieldPath)-1].Target
+	if targetField == nil || !isRepeatedField(targetField) {
+		return nil
+	}
+
+	schema := buildPropertySchemaWithReferencesFromField(targetField, registry, resolvedNames)
+	if schema == nil || schema.OpenAPIV3Schema == nil || schema.OpenAPIV3Schema.Type != "array" {
+		return nil
+	}
+	return schema
+}
+
 // annotationsForRefProperty returns annotations for a message/enum $ref.
 // Repeated fields use this schema as array items, so property-level metadata
 // stays on the outer array instead of wrapping each item reference.
@@ -1493,6 +1512,7 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 	if binding.Body == nil {
 		return nil, map[string]*OpenAPIV3SchemaRef{}
 	}
+	repeatedBodySchema := selectedRepeatedBodySchema(binding.Body, registry, resolvedNames)
 	schemasToAddToComponents := map[string]*OpenAPIV3SchemaRef{}
 	bodyRepresentation := extractRequestBodyFieldCombinations(binding, registry, resolvedNames)
 	parameterFields := extractParameterFields(binding)
@@ -1561,32 +1581,39 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			}
 		}
 	}
-	if len(bodyProperties) == 0 {
+	if len(bodyProperties) == 0 && repeatedBodySchema == nil {
 		return nil, map[string]*OpenAPIV3SchemaRef{}
 	}
 
-	bodySchema := &OpenAPIV3Schema{
-		Type:                "object",
-		Properties:          bodyProperties,
-		Required:            filterRequired(bodyRepresentation.requiredFields, bodyProperties),
-		Title:               bodyRepresentation.title,
-		Description:         bodyRepresentation.description,
-		OpenAPIV3Extensions: bodyRepresentation.extensions,
+	var bodySchema *OpenAPIV3Schema
+	var requestSchema *OpenAPIV3SchemaRef
+	var bodyRequired bool
+	if len(bodyProperties) > 0 {
+		bodySchema = &OpenAPIV3Schema{
+			Type:                "object",
+			Properties:          bodyProperties,
+			Required:            filterRequired(bodyRepresentation.requiredFields, bodyProperties),
+			Title:               bodyRepresentation.title,
+			Description:         bodyRepresentation.description,
+			OpenAPIV3Extensions: bodyRepresentation.extensions,
+		}
+		applyIndependentOneOfGroupConstraints(bodySchema, bodyRepresentation.oneofGroups, bodyRepresentation.requiredFields, pathSelectedFields)
+		requestSchema = &OpenAPIV3SchemaRef{OpenAPIV3Schema: bodySchema}
+
+		// requestBody.required means the HTTP body object itself cannot be omitted.
+		// Independent oneof constraints may still allow an empty object when the
+		// protobuf oneof is unset, but callers should still pass a body for body-bound
+		// RPCs that use those fields. This preserves generated SDK nil-body guards.
+		bodyRequired = schemaRequiresJSONBody(bodySchema)
 	}
-	applyIndependentOneOfGroupConstraints(bodySchema, bodyRepresentation.oneofGroups, bodyRepresentation.requiredFields, pathSelectedFields)
+	if repeatedBodySchema != nil {
+		requestSchema = repeatedBodySchema
+	}
 
 	bodyContent := make(map[string]OpenAPIV3MediaType)
 	bodyContent["application/json"] = OpenAPIV3MediaType{
-		Schema: &OpenAPIV3SchemaRef{
-			OpenAPIV3Schema: bodySchema,
-		},
+		Schema: requestSchema,
 	}
-
-	// requestBody.required means the HTTP body object itself cannot be omitted.
-	// Independent oneof constraints may still allow an empty object when the
-	// protobuf oneof is unset, but callers should still pass a body for body-bound
-	// RPCs that use those fields. This preserves generated SDK nil-body guards.
-	bodyRequired := schemaRequiresJSONBody(bodySchema)
 
 	return &OpenAPIV3RequestBodyRef{
 		OpenAPIV3RequestBody: &OpenAPIV3RequestBody{
