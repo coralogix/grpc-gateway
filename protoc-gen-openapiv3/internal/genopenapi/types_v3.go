@@ -243,15 +243,20 @@ type OpenAPIV3SchemaRef struct {
 }
 
 type OpenAPIV3Schema struct {
-	Title            string  `json:"title,omitempty" yaml:"title,omitempty"`
-	MultipleOf       float64 `json:"multipleOf,omitempty" yaml:"multipleOf,omitempty"`
-	Maximum          float64 `json:"maximum,omitempty" yaml:"maximum,omitempty"`
-	ExclusiveMaximum bool    `json:"exclusiveMaximum,omitempty" yaml:"exclusiveMaximum,omitempty"`
+	Title      string  `json:"title,omitempty" yaml:"title,omitempty"`
+	MultipleOf float64 `json:"multipleOf,omitempty" yaml:"multipleOf,omitempty"`
+	// Maximum and ExclusiveMaximum are pointers (and, per JSON Schema 2020-12
+	// used by OpenAPI 3.1, exclusive* are numeric bounds, not booleans). A
+	// pointer lets a deliberate 0 serialize and lets us drop the inclusive
+	// bound when the exclusive one is set (they are mutually exclusive in
+	// 2020-12). nil means the bound is absent.
+	Maximum          *float64 `json:"maximum,omitempty" yaml:"maximum,omitempty"`
+	ExclusiveMaximum *float64 `json:"exclusiveMaximum,omitempty" yaml:"exclusiveMaximum,omitempty"`
 	// Minimum is a pointer so a deliberate 0 serializes (omitempty drops a
 	// float64 zero). Unsigned integers, whose natural lower bound is 0, emit
 	// minimum: 0 by default; nil means "no minimum".
 	Minimum          *float64 `json:"minimum,omitempty" yaml:"minimum,omitempty"`
-	ExclusiveMinimum bool     `json:"exclusiveMinimum,omitempty" yaml:"exclusiveMinimum,omitempty"`
+	ExclusiveMinimum *float64 `json:"exclusiveMinimum,omitempty" yaml:"exclusiveMinimum,omitempty"`
 	MaxLength        uint64   `json:"maxLength,omitempty" yaml:"maxLength,omitempty"`
 	// MinLength is a pointer so an explicit 0 serializes; nil omits it. Mirrors MinItems.
 	MinLength *uint64 `json:"minLength,omitempty" yaml:"minLength,omitempty"`
@@ -277,13 +282,12 @@ type OpenAPIV3Schema struct {
 	Description          string                         `json:"description,omitempty" yaml:"description,omitempty"`
 	Format               string                         `json:"format,omitempty" yaml:"format,omitempty"`
 	Default              interface{}                    `json:"default,omitempty" yaml:"default,omitempty"`
-	Nullable             bool                           `json:"nullable,omitempty" yaml:"nullable,omitempty"`
 	Discriminator        *OpenAPIV3Discriminator        `json:"discriminator,omitempty" yaml:"discriminator,omitempty"`
 	ReadOnly             bool                           `json:"readOnly,omitempty" yaml:"readOnly,omitempty"`
 	WriteOnly            bool                           `json:"writeOnly,omitempty" yaml:"writeOnly,omitempty"`
 	Xml                  *OpenAPIV3XML                  `json:"xml,omitempty" yaml:"xml,omitempty"`
 	ExternalDocs         *OpenAPIV3ExternalDocs         `json:"externalDocs,omitempty" yaml:"externalDocs,omitempty"`
-	Example              RawExample                     `json:"example,omitempty" yaml:"example,omitempty"`
+	Examples             []RawExample                   `json:"examples,omitempty" yaml:"examples,omitempty"`
 	Deprecated           bool                           `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
 	OpenAPIV3Extensions  `json:"-" yaml:"-"`
 }

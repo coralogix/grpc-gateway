@@ -1582,6 +1582,40 @@ func generateMergedSpec(t *testing.T, reqText string) string {
 	return resp[0].GetContent()
 }
 
+// Operations that don't annotate openapiv3_operation.external_docs must not emit
+// an externalDocs object at all. Previously the generator initialized it to a
+// non-nil empty value, producing externalDocs: {url: ""} on every operation —
+// invalid under 3.1, where externalDocs.url must be a valid uri.
+func TestOperationExternalDocs_OmittedWhenUnannotated(t *testing.T) {
+	spec := generateMergedSpec(t, deterministicSpecRequest)
+	var doc struct {
+		Paths map[string]map[string]json.RawMessage `json:"paths"`
+	}
+	if err := json.Unmarshal([]byte(spec), &doc); err != nil {
+		t.Fatalf("unmarshal spec: %v", err)
+	}
+	methods := map[string]bool{"get": true, "put": true, "post": true, "delete": true, "patch": true}
+	operations := 0
+	for path, item := range doc.Paths {
+		for method, raw := range item {
+			if !methods[method] {
+				continue
+			}
+			operations++
+			var op map[string]json.RawMessage
+			if err := json.Unmarshal(raw, &op); err != nil {
+				t.Fatalf("unmarshal %s %s: %v", method, path, err)
+			}
+			if _, has := op["externalDocs"]; has {
+				t.Errorf("%s %s: unannotated operation must not emit externalDocs, got %s", method, path, op["externalDocs"])
+			}
+		}
+	}
+	if operations == 0 {
+		t.Fatal("expected the fixture to produce operations")
+	}
+}
+
 // TestGeneratedSpecIsDeterministic asserts the same protos produce the exact same
 // OpenAPI spec on every generation — byte-for-byte, across the whole document
 // (paths, schemas, tags, everything), not just the tags array.
@@ -3591,7 +3625,7 @@ func exampleFromBothSwitches(t *testing.T, field *descriptor.Field) (withRefs Ra
 	if plainSchema == nil || plainSchema.OpenAPIV3Schema == nil {
 		t.Fatal("buildPropertySchemaFromFieldType returned no inline schema")
 	}
-	return refSchema.OpenAPIV3Schema.Example, plainSchema.OpenAPIV3Schema.Example
+	return firstExample(refSchema.OpenAPIV3Schema), firstExample(plainSchema.OpenAPIV3Schema)
 }
 
 func TestExample_StringNoExample_OmitsExample(t *testing.T) {
@@ -3628,6 +3662,15 @@ func derefMinLength(p *uint64) uint64 {
 	return *p
 }
 
+// firstExample returns the single schema example (OpenAPI 3.1 emits schema
+// examples as a one-element array), or nil when none is set.
+func firstExample(s *OpenAPIV3Schema) RawExample {
+	if s == nil || len(s.Examples) == 0 {
+		return nil
+	}
+	return s.Examples[0]
+}
+
 func TestExample_StringMinLength1NoExample_NoViolation(t *testing.T) {
 	field := makeFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{
 		MinLength: 1,
@@ -3650,7 +3693,7 @@ func TestExample_StringMinLength1NoExample_NoViolation(t *testing.T) {
 			if derefMinLength(tc.schema.OpenAPIV3Schema.MinLength) != 1 {
 				t.Errorf("expected minLength=1, got %d", derefMinLength(tc.schema.OpenAPIV3Schema.MinLength))
 			}
-			if ex := tc.schema.OpenAPIV3Schema.Example; ex != nil {
+			if ex := firstExample(tc.schema.OpenAPIV3Schema); ex != nil {
 				t.Errorf("expected no example (empty example would violate minLength:1), got %q", string(ex))
 			}
 		})
@@ -3749,10 +3792,10 @@ func assertStringIntSchema(t *testing.T, s *OpenAPIV3Schema, wantPattern string)
 	if s.Pattern != wantPattern {
 		t.Errorf("expected pattern %q, got %q", wantPattern, s.Pattern)
 	}
-	if s.Minimum != nil || s.Maximum != 0 {
+	if s.Minimum != nil || s.Maximum != nil {
 		t.Errorf("expected no numeric minimum/maximum on a string schema, got min=%v max=%v", s.Minimum, s.Maximum)
 	}
-	if s.ExclusiveMinimum || s.ExclusiveMaximum {
+	if s.ExclusiveMinimum != nil || s.ExclusiveMaximum != nil {
 		t.Errorf("expected no exclusive bounds on a string schema")
 	}
 }
@@ -3786,7 +3829,7 @@ func TestStringInt_StrayNumericBoundsDoNotLeak(t *testing.T) {
 	})
 	withRefs, plain := inlineSchemasBothSwitches(t, field)
 	for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
-		if s.Minimum != nil || s.Maximum != 0 {
+		if s.Minimum != nil || s.Maximum != nil {
 			t.Errorf("stray numeric bounds leaked onto string schema: min=%v max=%v", s.Minimum, s.Maximum)
 		}
 		if s.Type != "string" {
@@ -3925,7 +3968,7 @@ func TestGoogleTypeDecimal_ObjectExamplePreserved(t *testing.T) {
 	withRefs, plain := inlineSchemasBothSwitches(t, field)
 	for name, s := range map[string]*OpenAPIV3Schema{"withRefs": withRefs, "plain": plain} {
 		t.Run(name, func(t *testing.T) {
-			if got := string(s.Example); got != `{"value":"1.5"}` {
+			if got := string(firstExample(s)); got != `{"value":"1.5"}` {
 				t.Errorf("expected Decimal object example to be preserved, got %q", got)
 			}
 		})
@@ -3997,7 +4040,7 @@ func TestStringInt_RepeatedNumericArrayExample_Coerced(t *testing.T) {
 		if schema == nil || schema.Type != "array" {
 			t.Fatalf("expected array schema, got %+v", schema)
 		}
-		if got := string(schema.Example); got != tc.want {
+		if got := string(firstExample(schema.OpenAPIV3Schema)); got != tc.want {
 			t.Errorf("%v: expected array example %s, got %q", tc.fieldType, tc.want, got)
 		}
 	}
@@ -4025,8 +4068,8 @@ func TestStringInt_ScalarExampleNormalized(t *testing.T) {
 			field := makeFieldWithExtension("n", tc.fieldType, &options.JSONSchema{Example: tc.example})
 			withRefs, plain := inlineSchemasBothSwitches(t, field)
 			for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
-				got := string(s.Example)
-				if tc.want == "" && s.Example != nil {
+				got := string(firstExample(s))
+				if tc.want == "" && firstExample(s) != nil {
 					t.Errorf("expected no example, got %q", got)
 				}
 				if tc.want != "" && got != tc.want {
@@ -4057,7 +4100,7 @@ func TestStringInt_RepeatedWrapperNumericArrayExample_Coerced(t *testing.T) {
 	if schema == nil || schema.Type != "array" {
 		t.Fatalf("expected array schema, got %+v", schema)
 	}
-	if got := string(schema.Example); got != `["1","2"]` {
+	if got := string(firstExample(schema.OpenAPIV3Schema)); got != `["1","2"]` {
 		t.Errorf("expected array example [\"1\",\"2\"], got %q", got)
 	}
 }
@@ -4118,7 +4161,7 @@ func TestStringInt_Int32AndUint32Unchanged(t *testing.T) {
 				if s.Format != tc.wantFormat {
 					t.Errorf("%s: expected format=%q, got %q", tc.name, tc.wantFormat, s.Format)
 				}
-				if s.Maximum != 50 {
+				if s.Maximum == nil || *s.Maximum != 50 {
 					t.Errorf("%s: expected numeric maximum=50 intact, got %v", tc.name, s.Maximum)
 				}
 			}
@@ -4197,8 +4240,8 @@ func TestApplyValueSchema_GenericMetadata(t *testing.T) {
 	if !s.ReadOnly {
 		t.Fatal("expected readOnly=true")
 	}
-	if string(s.Example) != "true" {
-		t.Fatalf("expected example=true, got %s", s.Example)
+	if string(firstExample(s)) != "true" {
+		t.Fatalf("expected example=true, got %s", firstExample(s))
 	}
 }
 
@@ -4221,14 +4264,23 @@ func TestApplyValueSchema_NumericConstraints(t *testing.T) {
 	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_INT32, nil), "")
 
 	s := got.OpenAPIV3Schema
-	if s.MultipleOf != 2 || s.Maximum != 100 {
-		t.Fatalf("expected numeric multipleOf/maximum, got %v/%v", s.MultipleOf, s.Maximum)
+	if s.MultipleOf != 2 {
+		t.Fatalf("expected multipleOf=2, got %v", s.MultipleOf)
 	}
-	if s.Minimum == nil || *s.Minimum != 0 {
-		t.Fatalf("expected numeric minimum=0, got %v", s.Minimum)
+	// In JSON Schema 2020-12 exclusiveMaximum is the numeric bound itself and is
+	// mutually exclusive with the inclusive maximum, so the inclusive bound is
+	// dropped.
+	if s.Maximum != nil {
+		t.Fatalf("expected inclusive maximum to be dropped when exclusive, got %v", *s.Maximum)
 	}
-	if !s.ExclusiveMaximum || !s.ExclusiveMinimum {
-		t.Fatal("expected exclusive numeric bounds")
+	if s.ExclusiveMaximum == nil || *s.ExclusiveMaximum != 100 {
+		t.Fatalf("expected exclusiveMaximum=100, got %v", s.ExclusiveMaximum)
+	}
+	if s.Minimum != nil {
+		t.Fatalf("expected inclusive minimum to be dropped when exclusive, got %v", *s.Minimum)
+	}
+	if s.ExclusiveMinimum == nil || *s.ExclusiveMinimum != 0 {
+		t.Fatalf("expected exclusiveMinimum=0, got %v", s.ExclusiveMinimum)
 	}
 	if s.Format != "int32" {
 		t.Fatalf("numeric value_schema must not override inferred format, got %q", s.Format)
@@ -4314,13 +4366,13 @@ func TestApplyValueSchema_StringConstraints(t *testing.T) {
 	if !slices.Equal(s.Enum, []string{"A", "B"}) {
 		t.Fatalf("expected string enum override, got %v", s.Enum)
 	}
-	if string(s.Example) != `"hello"` {
-		t.Fatalf("expected string example to be coerced to JSON string, got %s", s.Example)
+	if string(firstExample(s)) != `"hello"` {
+		t.Fatalf("expected string example to be coerced to JSON string, got %s", firstExample(s))
 	}
 	if _, err := json.Marshal(s); err != nil {
 		t.Fatalf("expected coerced string example to marshal as valid JSON: %v", err)
 	}
-	if s.Maximum != 0 || s.Minimum != nil || s.ExclusiveMaximum || s.MaxItems != 0 || s.MaxProperties != 0 {
+	if s.Maximum != nil || s.Minimum != nil || s.ExclusiveMaximum != nil || s.MaxItems != 0 || s.MaxProperties != 0 {
 		t.Fatalf("non-string constraints leaked onto string schema: max=%v min=%v exclusiveMax=%v maxItems=%d maxProperties=%d",
 			s.Maximum, s.Minimum, s.ExclusiveMaximum, s.MaxItems, s.MaxProperties)
 	}
@@ -4346,7 +4398,7 @@ func TestApplyValueSchema_ArrayConstraints(t *testing.T) {
 	if !s.UniqueItems {
 		t.Fatal("expected uniqueItems=true")
 	}
-	if s.Maximum != 0 || s.MaxLength != 0 || s.Pattern != "" || s.MaxProperties != 0 {
+	if s.Maximum != nil || s.MaxLength != 0 || s.Pattern != "" || s.MaxProperties != 0 {
 		t.Fatalf("non-array constraints leaked onto array schema: max=%v maxLength=%d pattern=%q maxProperties=%d",
 			s.Maximum, s.MaxLength, s.Pattern, s.MaxProperties)
 	}
@@ -4367,7 +4419,7 @@ func TestApplyValueSchema_ObjectConstraints(t *testing.T) {
 	if s.MaxProperties != 8 || s.MinProperties != 1 {
 		t.Fatalf("expected object property constraints, got max=%d min=%d", s.MaxProperties, s.MinProperties)
 	}
-	if s.Maximum != 0 || s.MaxLength != 0 || s.MaxItems != 0 {
+	if s.Maximum != nil || s.MaxLength != 0 || s.MaxItems != 0 {
 		t.Fatalf("non-object constraints leaked onto object schema: max=%v maxLength=%d maxItems=%d",
 			s.Maximum, s.MaxLength, s.MaxItems)
 	}
@@ -4660,8 +4712,8 @@ func TestWrapRefWithFieldAnnotations_MultipleAnnotationsNoWrapperType(t *testing
 		if !s.Deprecated {
 			t.Error("expected deprecated=true")
 		}
-		if string(s.Example) != `"soon"` {
-			t.Errorf("expected example %q, got %q", `"soon"`, string(s.Example))
+		if string(firstExample(s)) != `"soon"` {
+			t.Errorf("expected example %q, got %q", `"soon"`, string(firstExample(s)))
 		}
 		if s.Type != "" {
 			t.Fatalf("wrapper must not set type, got %q", s.Type)
@@ -4796,6 +4848,119 @@ func TestMinimum_SignedIntNoFabricatedMinimum(t *testing.T) {
 	}
 }
 
+// TestExclusiveBounds_NumericFormForOpenAPI31 covers the OpenAPI 3.0 → 3.1
+// exclusiveMinimum/exclusiveMaximum change: in JSON Schema 2020-12 the exclusive
+// keywords are numeric (the bound value itself) and mutually exclusive with the
+// inclusive minimum/maximum. The generator emits zero of these on today's spec,
+// so this exercises the otherwise-uncovered conversion.
+func TestExclusiveBounds_NumericFormForOpenAPI31(t *testing.T) {
+	t.Run("exclusive drops the inclusive bound and emits the numeric form", func(t *testing.T) {
+		field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_DOUBLE, &options.JSONSchema{
+			Maximum:          100,
+			Minimum:          proto.Float64(1),
+			ExclusiveMaximum: true,
+			ExclusiveMinimum: true,
+		})
+		withRefs, plain := inlineSchemasBothSwitches(t, field)
+		for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+			if s.Maximum != nil {
+				t.Errorf("expected inclusive maximum dropped when exclusive, got %v", *s.Maximum)
+			}
+			if s.ExclusiveMaximum == nil || *s.ExclusiveMaximum != 100 {
+				t.Errorf("expected exclusiveMaximum=100, got %v", s.ExclusiveMaximum)
+			}
+			if s.Minimum != nil {
+				t.Errorf("expected inclusive minimum dropped when exclusive, got %v", *s.Minimum)
+			}
+			if s.ExclusiveMinimum == nil || *s.ExclusiveMinimum != 1 {
+				t.Errorf("expected exclusiveMinimum=1, got %v", s.ExclusiveMinimum)
+			}
+			b, err := json.Marshal(s)
+			if err != nil {
+				t.Fatalf("schema must marshal as valid JSON: %v", err)
+			}
+			if !strings.Contains(string(b), `"exclusiveMaximum":100`) || !strings.Contains(string(b), `"exclusiveMinimum":1`) {
+				t.Errorf("expected numeric exclusive bounds in JSON, got %s", b)
+			}
+			if strings.Contains(string(b), `"maximum"`) || strings.Contains(string(b), `"minimum"`) {
+				t.Errorf("expected inclusive bounds to be dropped in JSON, got %s", b)
+			}
+		}
+	})
+	t.Run("inclusive keeps the bound and emits no exclusive", func(t *testing.T) {
+		field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_DOUBLE, &options.JSONSchema{
+			Maximum: 100,
+			Minimum: proto.Float64(1),
+		})
+		withRefs, plain := inlineSchemasBothSwitches(t, field)
+		for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+			if s.Maximum == nil || *s.Maximum != 100 {
+				t.Errorf("expected inclusive maximum=100, got %v", s.Maximum)
+			}
+			if s.Minimum == nil || *s.Minimum != 1 {
+				t.Errorf("expected inclusive minimum=1, got %v", s.Minimum)
+			}
+			if s.ExclusiveMaximum != nil || s.ExclusiveMinimum != nil {
+				t.Errorf("expected no exclusive bounds, got exclMax=%v exclMin=%v", s.ExclusiveMaximum, s.ExclusiveMinimum)
+			}
+		}
+	})
+}
+
+// Unsigned integers clamp the exclusive lower bound to their natural floor of 0:
+// exclusive_minimum with no minimum, or a negative one, must emit
+// exclusiveMinimum: 0 — never an inclusive minimum: 0 and never a negative bound.
+func TestExclusiveBounds_UnsignedClampedToZero(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		js   *options.JSONSchema
+	}{
+		{"no minimum", &options.JSONSchema{ExclusiveMinimum: true}},
+		{"negative minimum", &options.JSONSchema{ExclusiveMinimum: true, Minimum: proto.Float64(-5)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			field := makeFieldWithExtension("n", descriptorpb.FieldDescriptorProto_TYPE_UINT32, tc.js)
+			withRefs, plain := inlineSchemasBothSwitches(t, field)
+			for _, s := range []*OpenAPIV3Schema{withRefs, plain} {
+				if s.Minimum != nil {
+					t.Errorf("expected no inclusive minimum on unsigned exclusive bound, got %v", *s.Minimum)
+				}
+				if s.ExclusiveMinimum == nil || *s.ExclusiveMinimum != 0 {
+					t.Errorf("expected exclusiveMinimum=0 (clamped to unsigned floor), got %v", s.ExclusiveMinimum)
+				}
+			}
+		})
+	}
+}
+
+// An unsigned map value keeps its generated minimum: 0 floor; a value_schema
+// exclusive_minimum must convert that effective floor to exclusiveMinimum: 0
+// even when the override minimum is absent or a rejected negative.
+func TestApplyValueSchema_UnsignedExclusiveMinimumClampedToZero(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		vs   *options.JSONSchema
+	}{
+		{"no minimum", &options.JSONSchema{ExclusiveMinimum: true}},
+		{"negative minimum", &options.JSONSchema{ExclusiveMinimum: true, Minimum: proto.Float64(-1)}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+				Type:    "integer",
+				Format:  "int64",
+				Minimum: proto.Float64(0), // generated unsigned floor
+			}}, tc.vs, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_UINT32, nil), "")
+			s := got.OpenAPIV3Schema
+			if s.Minimum != nil {
+				t.Errorf("expected the inclusive minimum to be dropped, got %v", *s.Minimum)
+			}
+			if s.ExclusiveMinimum == nil || *s.ExclusiveMinimum != 0 {
+				t.Errorf("expected exclusiveMinimum=0 against the effective floor, got %v", s.ExclusiveMinimum)
+			}
+		})
+	}
+}
+
 func TestMinimum_SignedIntExplicitZeroSchemaProperty(t *testing.T) {
 	field := makeSingularFieldWithExtension("page_offset", descriptorpb.FieldDescriptorProto_TYPE_INT32, &options.JSONSchema{
 		Description: "Zero-based page offset.",
@@ -4814,7 +4979,7 @@ func TestMinimum_SignedIntExplicitZeroSchemaProperty(t *testing.T) {
 			if s.Minimum == nil || *s.Minimum != 0 {
 				t.Fatalf("expected explicit minimum=0 to be emitted, got %v", s.Minimum)
 			}
-			if s.Maximum != 10000 {
+			if s.Maximum == nil || *s.Maximum != 10000 {
 				t.Errorf("expected maximum=10000, got %v", s.Maximum)
 			}
 		})
@@ -4856,7 +5021,7 @@ func TestMinimum_SignedIntExplicitZeroQueryParameter(t *testing.T) {
 	if s.Minimum == nil || *s.Minimum != 0 {
 		t.Fatalf("expected explicit minimum=0 to be emitted, got %v", s.Minimum)
 	}
-	if s.Maximum != 10000 {
+	if s.Maximum == nil || *s.Maximum != 10000 {
 		t.Errorf("expected maximum=10000, got %v", s.Maximum)
 	}
 }
@@ -4889,7 +5054,7 @@ func TestMapValueSchema_Int32MapValueConstraints(t *testing.T) {
 			if value.Minimum == nil || *value.Minimum != 0 {
 				t.Fatalf("expected value minimum=0, got %v", value.Minimum)
 			}
-			if value.Maximum != 10000 {
+			if value.Maximum == nil || *value.Maximum != 10000 {
 				t.Errorf("expected value maximum=10000, got %v", value.Maximum)
 			}
 		})
@@ -4913,7 +5078,7 @@ func TestMapValueSchema_Uint32MapValueConstraints(t *testing.T) {
 			if value.Minimum == nil || *value.Minimum != 0 {
 				t.Fatalf("expected unsigned map value minimum=0, got %v", value.Minimum)
 			}
-			if value.Maximum != 10000 {
+			if value.Maximum == nil || *value.Maximum != 10000 {
 				t.Errorf("expected value maximum=10000, got %v", value.Maximum)
 			}
 		})
@@ -4938,7 +5103,7 @@ func TestMapValueSchema_Uint32MapValueNegativeMinimumClamped(t *testing.T) {
 			if value.Minimum == nil || *value.Minimum != 0 {
 				t.Fatalf("negative minimum must not lower unsigned map value floor, got %v", value.Minimum)
 			}
-			if value.Maximum != 10000 {
+			if value.Maximum == nil || *value.Maximum != 10000 {
 				t.Errorf("expected value maximum=10000, got %v", value.Maximum)
 			}
 		})
@@ -4963,7 +5128,7 @@ func TestMapValueSchema_UInt32ValueMapValueNegativeMinimumClamped(t *testing.T) 
 			if value.Minimum == nil || *value.Minimum != 0 {
 				t.Fatalf("negative minimum must not lower UInt32Value map value floor, got %v", value.Minimum)
 			}
-			if value.Maximum != 10000 {
+			if value.Maximum == nil || *value.Maximum != 10000 {
 				t.Errorf("expected value maximum=10000, got %v", value.Maximum)
 			}
 		})
@@ -5026,8 +5191,8 @@ func TestMapValueSchema_StringMapValueExampleCoerced(t *testing.T) {
 			if value.Type != "string" {
 				t.Fatalf("expected string map value schema, got type=%q", value.Type)
 			}
-			if string(value.Example) != `"hello"` {
-				t.Fatalf("expected string map value example to be coerced to JSON string, got %s", value.Example)
+			if string(firstExample(value)) != `"hello"` {
+				t.Fatalf("expected string map value example to be coerced to JSON string, got %s", firstExample(value))
 			}
 			if _, err := json.Marshal(s); err != nil {
 				t.Fatalf("expected map schema with string value example to marshal as valid JSON: %v", err)
