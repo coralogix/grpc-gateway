@@ -34,6 +34,15 @@ func byteFieldPattern(override string) string {
 	return defaultByteFieldPattern
 }
 
+// applyOpenAPIFieldPattern copies a nonempty annotation pattern onto schema.
+// An empty annotation leaves the schema's existing pattern, so well-known
+// defaults (e.g. BytesValue's base64 pattern) are not wiped.
+func applyOpenAPIFieldPattern(schema *OpenAPIV3Schema, pattern string) {
+	if pattern != "" {
+		schema.Pattern = pattern
+	}
+}
+
 type protoField struct {
 	FullPathToField []string
 	Field           *descriptor.Field
@@ -2991,7 +3000,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 					schemaCopy.ExclusiveMinimum = exclusiveMinimumPtr
 				}
 				schemaCopy.MultipleOf = multipleOf
-				schemaCopy.Pattern = pattern
+				applyOpenAPIFieldPattern(&schemaCopy, pattern)
 				schemaCopy.MaxLength = maxLength
 				// Only string wrappers carry minLength; non-string wrappers omit it.
 				if schemaCopy.Type == "string" {
@@ -3508,7 +3517,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 					schemaCopy.ExclusiveMinimum = exclusiveMinimumPtr
 				}
 				schemaCopy.MultipleOf = multipleOf
-				schemaCopy.Pattern = pattern
+				applyOpenAPIFieldPattern(&schemaCopy, pattern)
 				schemaCopy.MaxLength = maxLength
 				// Only string wrappers carry minLength; non-string wrappers omit it.
 				if schemaCopy.Type == "string" {

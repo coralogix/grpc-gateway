@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // A schema's x-* extensions (e.g. x-stability, plumbed through from an
@@ -112,5 +114,25 @@ func TestOpenAPIV3SecuritySchemeRefMarshalsInline(t *testing.T) {
 	}
 	if m["type"] != "apiKey" || m["in"] != "header" || m["name"] != "Authorization" {
 		t.Errorf("got %s", b)
+	}
+}
+
+func TestOpenAPIV3SecuritySchemeRefMarshalsYAMLInline(t *testing.T) {
+	t.Parallel()
+	ref := OpenAPIV3SecuritySchemeRef{SecurityScheme: &OpenAPIV3SecurityScheme{
+		Type: "apiKey",
+		In:   "header",
+		Name: "Authorization",
+	}}
+	b, err := yaml.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := yaml.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["type"] != "apiKey" || m["in"] != "header" || m["name"] != "Authorization" {
+		t.Errorf("yaml = %s", b)
 	}
 }

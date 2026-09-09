@@ -456,6 +456,16 @@ func (s OpenAPIV3SecuritySchemeRef) MarshalJSON() ([]byte, error) {
 	return json.Marshal(s.SecurityScheme)
 }
 
+func (s OpenAPIV3SecuritySchemeRef) MarshalYAML() (interface{}, error) {
+	if s.Ref != "" {
+		return map[string]string{"$ref": s.Ref}, nil
+	}
+	if s.SecurityScheme == nil {
+		return nil, nil
+	}
+	return s.SecurityScheme, nil
+}
+
 type OpenAPIV3SecurityScheme struct {
 	Type             string               `json:"type" yaml:"type"`
 	Description      string               `json:"description,omitempty" yaml:"description,omitempty"`

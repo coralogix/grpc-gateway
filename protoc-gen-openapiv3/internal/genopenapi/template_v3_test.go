@@ -5731,6 +5731,52 @@ func TestBytesValueWellKnownPattern(t *testing.T) {
 	}
 }
 
+func TestBytesValueFieldKeepsDefaultPattern(t *testing.T) {
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	field := &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String("blob"),
+			Type:     &msgType,
+			TypeName: proto.String(".google.protobuf.BytesValue"),
+			Options:  &descriptorpb.FieldOptions{},
+		},
+	}
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for name, s := range map[string]*OpenAPIV3Schema{"with-refs": withRefs, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Format != "byte" {
+				t.Errorf("format = %q, want byte", s.Format)
+			}
+			if s.Pattern != defaultByteFieldPattern {
+				t.Errorf("pattern = %q, want default %q", s.Pattern, defaultByteFieldPattern)
+			}
+		})
+	}
+}
+
+func TestBytesValueFieldAnnotatedPatternWins(t *testing.T) {
+	const override = "^[A-F0-9]+$"
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	opts := &descriptorpb.FieldOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Field, &options.JSONSchema{Pattern: override})
+	field := &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String("blob"),
+			Type:     &msgType,
+			TypeName: proto.String(".google.protobuf.BytesValue"),
+			Options:  opts,
+		},
+	}
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for name, s := range map[string]*OpenAPIV3Schema{"with-refs": withRefs, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Pattern != override {
+				t.Errorf("pattern = %q, want %q", s.Pattern, override)
+			}
+		})
+	}
+}
+
 func TestComponentizeSharedParameters(t *testing.T) {
 	shared := hoistPathParam("id", "Resource id.")
 	unique := hoistPathParam("rev", "Revision.")
