@@ -1084,7 +1084,7 @@ func componentizeSharedParameters(paths OpenAPIV3Paths) map[string]OpenAPIV3Para
 		}
 		for i := range *list {
 			p := &(*list)[i]
-			if p.Ref != "" || p.OpenAPIV3Parameter == nil {
+			if p.Ref != "" || p.OpenAPIV3Parameter == nil || p.In != "path" {
 				continue
 			}
 			fp, err := parameterFingerprint(*p.OpenAPIV3Parameter)

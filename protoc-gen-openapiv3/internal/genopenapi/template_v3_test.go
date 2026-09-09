@@ -5755,6 +5755,17 @@ func TestComponentizeSharedParameters(t *testing.T) {
 	}
 }
 
+func TestComponentizeSharedParametersSkipsQuery(t *testing.T) {
+	q := hoistQueryParam("filter")
+	paths := OpenAPIV3Paths{
+		"/v1/a": {Get: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{q}}},
+		"/v1/b": {Get: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{q}}},
+	}
+	if components := componentizeSharedParameters(paths); components != nil {
+		t.Errorf("query params must stay inline, got components %v", keysOf(components))
+	}
+}
+
 func keysOf(m map[string]OpenAPIV3ParameterRef) []string {
 	keys := make([]string, 0, len(m))
 	for k := range m {
