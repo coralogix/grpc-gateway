@@ -807,7 +807,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				extensions := OpenAPIV3Extensions{}
 				var description string
 				var successResponseExamples map[string]string
-				var operationSecurity []OpenAPIV3SecurityReq
+				var operationSecurity *[]OpenAPIV3SecurityReq
 				if proto.HasExtension(m.Options, options.E_Openapiv3Operation) {
 					operation, ok := proto.GetExtension(m.Options, options.E_Openapiv3Operation).(*options.Operation)
 					if ok {
@@ -836,7 +836,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 							if err != nil {
 								return nil, nil, err
 							}
-							operationSecurity = reqs
+							operationSecurity = &reqs
 						}
 						// Emit externalDocs only when a real url is present (url is the
 						// required field; description is optional). Otherwise it stays
@@ -1027,6 +1027,11 @@ func protoSecurityRequirements(reqs []*options.SecurityRequirement) ([]OpenAPIV3
 			copy(scopes, v.Scope)
 			newSecReq[k] = scopes
 		}
+		// An empty SecurityRequirement is the OpenAPI override that clears
+		// inherited document security (`security: []`). Do not emit `{}`.
+		if len(newSecReq) == 0 {
+			continue
+		}
 		out = append(out, newSecReq)
 	}
 	return out, nil
@@ -1037,6 +1042,12 @@ func protoSecuritySchemeToOpenAPIV3(sec *options.SecurityScheme) *OpenAPIV3Secur
 		return nil
 	}
 	out := &OpenAPIV3SecurityScheme{Description: sec.Description}
+	if len(sec.Extensions) > 0 {
+		out.OpenAPIV3Extensions = make(OpenAPIV3Extensions, len(sec.Extensions))
+		for k, v := range sec.Extensions {
+			out.OpenAPIV3Extensions[k] = v
+		}
+	}
 	switch sec.Type {
 	case options.SecurityScheme_TYPE_BASIC:
 		out.Type = "http"

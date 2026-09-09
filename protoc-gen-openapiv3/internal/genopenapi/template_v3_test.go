@@ -15,6 +15,7 @@ import (
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	"google.golang.org/protobuf/types/pluginpb"
@@ -5877,5 +5878,47 @@ func TestProtoSecuritySchemeBasicAndOAuth(t *testing.T) {
 	}
 	if oauth.Flows.AuthorizationCode.TokenURL != "https://example/token" {
 		t.Errorf("token URL = %q", oauth.Flows.AuthorizationCode.TokenURL)
+	}
+}
+
+func TestProtoSecuritySchemeCopiesExtensions(t *testing.T) {
+	sec := protoSecuritySchemeToOpenAPIV3(&options.SecurityScheme{
+		Type: options.SecurityScheme_TYPE_API_KEY,
+		In:   options.SecurityScheme_IN_HEADER,
+		Name: "Authorization",
+		Extensions: map[string]*structpb.Value{
+			"x-stability": structpb.NewStringValue("preview"),
+		},
+	})
+	if sec.OpenAPIV3Extensions["x-stability"] == nil {
+		t.Fatalf("extensions not copied: %+v", sec.OpenAPIV3Extensions)
+	}
+}
+
+func TestProtoSecurityRequirementsDropsEmpty(t *testing.T) {
+	reqs, err := protoSecurityRequirements([]*options.SecurityRequirement{
+		{}, // operation-level override: clear inherited security
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 0 {
+		t.Fatalf("empty requirement must not emit {{}}, got %#v", reqs)
+	}
+}
+
+func TestOpenAPIV3OperationEmptySecurityMarshalsAsArray(t *testing.T) {
+	empty := []OpenAPIV3SecurityReq{}
+	op := OpenAPIV3Operation{
+		OperationID: "public",
+		Responses:   OpenAPIV3Responses{},
+		Security:    &empty,
+	}
+	b, err := json.Marshal(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"security":[]`) {
+		t.Errorf("want security:[]; json=%s", b)
 	}
 }

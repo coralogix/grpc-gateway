@@ -136,3 +136,35 @@ func TestOpenAPIV3SecuritySchemeRefMarshalsYAMLInline(t *testing.T) {
 		t.Errorf("yaml = %s", b)
 	}
 }
+
+func TestOpenAPIV3SecuritySchemeMarshalsExtensions(t *testing.T) {
+	t.Parallel()
+	ref := OpenAPIV3SecuritySchemeRef{SecurityScheme: &OpenAPIV3SecurityScheme{
+		Type:                "apiKey",
+		In:                  "header",
+		Name:                "Authorization",
+		OpenAPIV3Extensions: OpenAPIV3Extensions{"x-stability": "preview"},
+	}}
+	b, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["x-stability"] != "preview" {
+		t.Errorf("json extensions dropped: %s", b)
+	}
+	yb, err := yaml.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ym map[string]interface{}
+	if err := yaml.Unmarshal(yb, &ym); err != nil {
+		t.Fatal(err)
+	}
+	if ym["x-stability"] != "preview" {
+		t.Errorf("yaml extensions dropped: %s", yb)
+	}
+}

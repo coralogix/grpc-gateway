@@ -132,7 +132,10 @@ type OpenAPIV3Operation struct {
 	Responses           OpenAPIV3Responses              `json:"responses" yaml:"responses"`
 	Callbacks           map[string]OpenAPIV3CallbackRef `json:"callbacks,omitempty" yaml:"callbacks,omitempty"`
 	Deprecated          bool                            `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
-	Security            []OpenAPIV3SecurityReq          `json:"security,omitempty" yaml:"security,omitempty"`
+	// Pointer so an empty slice (operation-level override that clears
+	// document security) marshals as `security: []` instead of being dropped
+	// by omitempty.
+	Security            *[]OpenAPIV3SecurityReq         `json:"security,omitempty" yaml:"security,omitempty"`
 	Servers             []OpenAPIV3Server               `json:"servers,omitempty" yaml:"servers,omitempty"`
 	ExternalDocs        *OpenAPIV3ExternalDocs          `json:"externalDocs,omitempty" yaml:"externalDocs,omitempty"`
 	OpenAPIV3Extensions `json:"-" yaml:"-"`
@@ -467,14 +470,50 @@ func (s OpenAPIV3SecuritySchemeRef) MarshalYAML() (interface{}, error) {
 }
 
 type OpenAPIV3SecurityScheme struct {
-	Type             string               `json:"type" yaml:"type"`
-	Description      string               `json:"description,omitempty" yaml:"description,omitempty"`
-	Name             string               `json:"name,omitempty" yaml:"name,omitempty"`
-	In               string               `json:"in,omitempty" yaml:"in,omitempty"`
-	Scheme           string               `json:"scheme,omitempty" yaml:"scheme,omitempty"`
-	BearerFormat     string               `json:"bearerFormat,omitempty" yaml:"bearerFormat,omitempty"`
-	Flows            *OpenAPIV3OAuthFlows `json:"flows,omitempty" yaml:"flows,omitempty"`
-	OpenIDConnectURL string               `json:"openIdConnectUrl,omitempty" yaml:"openIdConnectUrl,omitempty"`
+	Type                string               `json:"type" yaml:"type"`
+	Description         string               `json:"description,omitempty" yaml:"description,omitempty"`
+	Name                string               `json:"name,omitempty" yaml:"name,omitempty"`
+	In                  string               `json:"in,omitempty" yaml:"in,omitempty"`
+	Scheme              string               `json:"scheme,omitempty" yaml:"scheme,omitempty"`
+	BearerFormat        string               `json:"bearerFormat,omitempty" yaml:"bearerFormat,omitempty"`
+	Flows               *OpenAPIV3OAuthFlows `json:"flows,omitempty" yaml:"flows,omitempty"`
+	OpenIDConnectURL    string               `json:"openIdConnectUrl,omitempty" yaml:"openIdConnectUrl,omitempty"`
+	OpenAPIV3Extensions `json:"-" yaml:"-"`
+}
+
+func (s OpenAPIV3SecurityScheme) MarshalJSON() ([]byte, error) {
+	type Alias OpenAPIV3SecurityScheme
+	b, err := json.Marshal(Alias(s))
+	if err != nil {
+		return nil, err
+	}
+	if len(s.OpenAPIV3Extensions) == 0 {
+		return b, nil
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	for k, v := range s.OpenAPIV3Extensions {
+		ev, err := json.Marshal(v)
+		if err != nil {
+			return nil, err
+		}
+		m[k] = ev
+	}
+	return json.Marshal(m)
+}
+
+func (s OpenAPIV3SecurityScheme) MarshalYAML() (interface{}, error) {
+	b, err := json.Marshal(s)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	return m, nil
 }
 
 type OpenAPIV3OAuthFlows struct {
