@@ -446,6 +446,16 @@ type OpenAPIV3SecuritySchemeRef struct {
 	SecurityScheme *OpenAPIV3SecurityScheme `json:"-" yaml:"-"`
 }
 
+func (s OpenAPIV3SecuritySchemeRef) MarshalJSON() ([]byte, error) {
+	if s.Ref != "" {
+		return json.Marshal(map[string]string{"$ref": s.Ref})
+	}
+	if s.SecurityScheme == nil {
+		return json.Marshal(nil)
+	}
+	return json.Marshal(s.SecurityScheme)
+}
+
 type OpenAPIV3SecurityScheme struct {
 	Type             string               `json:"type" yaml:"type"`
 	Description      string               `json:"description,omitempty" yaml:"description,omitempty"`

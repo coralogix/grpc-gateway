@@ -60,6 +60,7 @@ func mergeTargetFile(targets []*wrapperv3, mergeFileName string) *wrapperv3 {
 			if mergedTarget.openapiv3Spec.Components == nil {
 				mergedTarget.openapiv3Spec.Components = &OpenAPIV3Components{}
 			}
+			ensureComponentMaps(mergedTarget.openapiv3Spec.Components)
 			if f.openapiv3Spec.Components != nil {
 				for k, v := range f.openapiv3Spec.Components.Schemas {
 					mergedTarget.openapiv3Spec.Components.Schemas[k] = v
@@ -100,6 +101,36 @@ func mergeTargetFile(targets []*wrapperv3, mergeFileName string) *wrapperv3 {
 		}
 	}
 	return mergedTarget
+}
+
+func ensureComponentMaps(c *OpenAPIV3Components) {
+	if c.Schemas == nil {
+		c.Schemas = map[string]*OpenAPIV3SchemaRef{}
+	}
+	if c.Responses == nil {
+		c.Responses = map[string]OpenAPIV3ResponseRef{}
+	}
+	if c.Parameters == nil {
+		c.Parameters = map[string]OpenAPIV3ParameterRef{}
+	}
+	if c.RequestBodies == nil {
+		c.RequestBodies = map[string]OpenAPIV3RequestBodyRef{}
+	}
+	if c.Headers == nil {
+		c.Headers = map[string]OpenAPIV3HeaderRef{}
+	}
+	if c.SecuritySchemes == nil {
+		c.SecuritySchemes = map[string]OpenAPIV3SecuritySchemeRef{}
+	}
+	if c.Links == nil {
+		c.Links = map[string]OpenAPIV3LinkRef{}
+	}
+	if c.Callbacks == nil {
+		c.Callbacks = map[string]OpenAPIV3CallbackRef{}
+	}
+	if c.Examples == nil {
+		c.Examples = map[string]OpenAPIV3ExampleRef{}
+	}
 }
 
 // encodeOpenAPI converts OpenAPI file obj to pluginpb.CodeGeneratorResponse_File

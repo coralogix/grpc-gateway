@@ -94,3 +94,23 @@ func TestOpenAPIV3SchemaMarshalExtensionsPreserveIntegerPrecision(t *testing.T) 
 		t.Errorf("x-stability missing; json=%s", b)
 	}
 }
+
+func TestOpenAPIV3SecuritySchemeRefMarshalsInline(t *testing.T) {
+	t.Parallel()
+	ref := OpenAPIV3SecuritySchemeRef{SecurityScheme: &OpenAPIV3SecurityScheme{
+		Type: "apiKey",
+		In:   "header",
+		Name: "Authorization",
+	}}
+	b, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["type"] != "apiKey" || m["in"] != "header" || m["name"] != "Authorization" {
+		t.Errorf("got %s", b)
+	}
+}
