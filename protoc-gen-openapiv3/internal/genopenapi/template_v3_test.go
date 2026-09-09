@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor/openapiconfigv3"
 	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
 	"google.golang.org/genproto/googleapis/api/visibility"
 	"google.golang.org/protobuf/encoding/prototext"
@@ -5843,7 +5844,7 @@ func TestApplyFileSwaggerOptionsAPIKey(t *testing.T) {
 	})
 	file := &descriptor.File{FileDescriptorProto: &descriptorpb.FileDescriptorProto{Options: opts}}
 	doc := &OpenAPIV3Document{Components: &OpenAPIV3Components{}}
-	if err := applyFileSwaggerOptions(file, doc); err != nil {
+	if err := applyFileSwaggerOptions(nil, file, doc); err != nil {
 		t.Fatal(err)
 	}
 	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
@@ -5858,6 +5859,54 @@ func TestApplyFileSwaggerOptionsAPIKey(t *testing.T) {
 	}
 	if _, ok := doc.Security[0]["ApiKeyAuth"]; !ok {
 		t.Errorf("document security = %#v", doc.Security)
+	}
+}
+
+func TestApplyFileSwaggerOptionsFromRegistry(t *testing.T) {
+	fileProto := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("security.proto"),
+		Package: proto.String("example"),
+		Syntax:  proto.String("proto3"),
+		Options: &descriptorpb.FileOptions{GoPackage: proto.String("example.com/security;security")},
+	}
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{ProtoFile: []*descriptorpb.FileDescriptorProto{fileProto}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterOpenAPIOptionsv3(&openapiconfigv3.OpenAPIOptions{
+		File: []*openapiconfigv3.OpenAPIFileOption{{
+			File: "security.proto",
+			Option: &options.Swagger{
+				SecurityDefinitions: &options.SecurityDefinitions{
+					Security: map[string]*options.SecurityScheme{
+						"ApiKeyAuth": {
+							Type: options.SecurityScheme_TYPE_API_KEY,
+							In:   options.SecurityScheme_IN_HEADER,
+							Name: "Authorization",
+						},
+					},
+				},
+				Security: []*options.SecurityRequirement{{
+					SecurityRequirement: map[string]*options.SecurityRequirement_SecurityRequirementValue{
+						"ApiKeyAuth": {},
+					},
+				}},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	file := &descriptor.File{FileDescriptorProto: fileProto}
+	doc := &OpenAPIV3Document{Components: &OpenAPIV3Components{}}
+	if err := applyFileSwaggerOptions(reg, file, doc); err != nil {
+		t.Fatal(err)
+	}
+	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
+	if !ok || scheme.SecurityScheme == nil {
+		t.Fatalf("registry file option was ignored: %+v", doc.Components.SecuritySchemes)
+	}
+	if len(doc.Security) != 1 {
+		t.Fatalf("security = %#v", doc.Security)
 	}
 }
 

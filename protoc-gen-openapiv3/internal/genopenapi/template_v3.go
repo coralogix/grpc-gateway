@@ -680,7 +680,7 @@ func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 		},
 		Tags: tags,
 	}
-	if err := applyFileSwaggerOptions(param.File, &openapiDocument); err != nil {
+	if err := applyFileSwaggerOptions(param.reg, param.File, &openapiDocument); err != nil {
 		return OpenAPIV3Document{}, err
 	}
 
@@ -979,12 +979,9 @@ func removePathParameter(params []OpenAPIV3ParameterRef, name string) []OpenAPIV
 	return filtered
 }
 
-func applyFileSwaggerOptions(file *descriptor.File, doc *OpenAPIV3Document) error {
-	if file == nil || file.Options == nil || !proto.HasExtension(file.Options, options.E_Openapiv3Swagger) {
-		return nil
-	}
-	spb, ok := proto.GetExtension(file.Options, options.E_Openapiv3Swagger).(*options.Swagger)
-	if !ok || spb == nil {
+func applyFileSwaggerOptions(reg *descriptor.Registry, file *descriptor.File, doc *OpenAPIV3Document) error {
+	spb := getFileOpenAPIOptionv3(reg, file)
+	if spb == nil {
 		return nil
 	}
 	if spb.SecurityDefinitions != nil && len(spb.SecurityDefinitions.Security) > 0 {
@@ -1011,6 +1008,20 @@ func applyFileSwaggerOptions(file *descriptor.File, doc *OpenAPIV3Document) erro
 			return err
 		}
 		doc.Security = reqs
+	}
+	return nil
+}
+
+func getFileOpenAPIOptionv3(reg *descriptor.Registry, file *descriptor.File) *options.Swagger {
+	if file != nil && file.Options != nil && proto.HasExtension(file.Options, options.E_Openapiv3Swagger) {
+		if spb, ok := proto.GetExtension(file.Options, options.E_Openapiv3Swagger).(*options.Swagger); ok && spb != nil {
+			return spb
+		}
+	}
+	if reg != nil && file != nil && file.Name != nil {
+		if spb, ok := reg.GetOpenAPIFileOptionv3(file.GetName()); ok {
+			return spb
+		}
 	}
 	return nil
 }
