@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // A schema's x-* extensions (e.g. x-stability, plumbed through from an
@@ -92,5 +94,77 @@ func TestOpenAPIV3SchemaMarshalExtensionsPreserveIntegerPrecision(t *testing.T) 
 	}
 	if !strings.Contains(string(b), `"x-stability":"preview"`) {
 		t.Errorf("x-stability missing; json=%s", b)
+	}
+}
+
+func TestOpenAPIV3SecuritySchemeRefMarshalsInline(t *testing.T) {
+	t.Parallel()
+	ref := OpenAPIV3SecuritySchemeRef{SecurityScheme: &OpenAPIV3SecurityScheme{
+		Type: "apiKey",
+		In:   "header",
+		Name: "Authorization",
+	}}
+	b, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["type"] != "apiKey" || m["in"] != "header" || m["name"] != "Authorization" {
+		t.Errorf("got %s", b)
+	}
+}
+
+func TestOpenAPIV3SecuritySchemeRefMarshalsYAMLInline(t *testing.T) {
+	t.Parallel()
+	ref := OpenAPIV3SecuritySchemeRef{SecurityScheme: &OpenAPIV3SecurityScheme{
+		Type: "apiKey",
+		In:   "header",
+		Name: "Authorization",
+	}}
+	b, err := yaml.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := yaml.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["type"] != "apiKey" || m["in"] != "header" || m["name"] != "Authorization" {
+		t.Errorf("yaml = %s", b)
+	}
+}
+
+func TestOpenAPIV3SecuritySchemeMarshalsExtensions(t *testing.T) {
+	t.Parallel()
+	ref := OpenAPIV3SecuritySchemeRef{SecurityScheme: &OpenAPIV3SecurityScheme{
+		Type:                "apiKey",
+		In:                  "header",
+		Name:                "Authorization",
+		OpenAPIV3Extensions: OpenAPIV3Extensions{"x-stability": "preview"},
+	}}
+	b, err := json.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]interface{}
+	if err := json.Unmarshal(b, &m); err != nil {
+		t.Fatal(err)
+	}
+	if m["x-stability"] != "preview" {
+		t.Errorf("json extensions dropped: %s", b)
+	}
+	yb, err := yaml.Marshal(ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ym map[string]interface{}
+	if err := yaml.Unmarshal(yb, &ym); err != nil {
+		t.Fatal(err)
+	}
+	if ym["x-stability"] != "preview" {
+		t.Errorf("yaml extensions dropped: %s", yb)
 	}
 }

@@ -23,6 +23,26 @@ import (
 
 const successStatusCode = "200"
 
+// defaultByteFieldPattern is the OpenAPI pattern emitted for proto `bytes`
+// fields (`format: byte`) when the field has no explicit pattern annotation.
+const defaultByteFieldPattern = `^[A-Za-z0-9+/]*={0,2}$`
+
+func byteFieldPattern(override string) string {
+	if override != "" {
+		return override
+	}
+	return defaultByteFieldPattern
+}
+
+// applyOpenAPIFieldPattern copies a nonempty annotation pattern onto schema.
+// An empty annotation leaves the schema's existing pattern, so well-known
+// defaults (e.g. BytesValue's base64 pattern) are not wiped.
+func applyOpenAPIFieldPattern(schema *OpenAPIV3Schema, pattern string) {
+	if pattern != "" {
+		schema.Pattern = pattern
+	}
+}
+
 type protoField struct {
 	FullPathToField []string
 	Field           *descriptor.Field
@@ -55,8 +75,9 @@ var wellKnownTypesToOpenAPIV3SchemaMapping = map[string]*OpenAPIV3Schema{
 		Type: "string",
 	},
 	".google.protobuf.BytesValue": {
-		Type:   "string",
-		Format: "byte",
+		Type:    "string",
+		Format:  "byte",
+		Pattern: defaultByteFieldPattern,
 	},
 	".google.protobuf.Int32Value": {
 		Type:   "integer",
@@ -646,6 +667,7 @@ func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 		return OpenAPIV3Document{}, err
 	}
 	hoistSharedPathParameters(paths)
+	paramComponents := componentizeSharedParameters(paths)
 	openapiDocument := OpenAPIV3Document{
 		OpenAPI: "3.1.0",
 		Info: &OpenAPIV3Info{
@@ -653,9 +675,13 @@ func applyTemplateV3(param param) (OpenAPIV3Document, error) {
 		},
 		Paths: paths,
 		Components: &OpenAPIV3Components{
-			Schemas: schemas,
+			Schemas:    schemas,
+			Parameters: paramComponents,
 		},
 		Tags: tags,
+	}
+	if err := applyFileSwaggerOptions(param.reg, param.File, &openapiDocument); err != nil {
+		return OpenAPIV3Document{}, err
 	}
 
 	return openapiDocument, nil
@@ -781,6 +807,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				extensions := OpenAPIV3Extensions{}
 				var description string
 				var successResponseExamples map[string]string
+				var operationSecurity *[]OpenAPIV3SecurityReq
 				if proto.HasExtension(m.Options, options.E_Openapiv3Operation) {
 					operation, ok := proto.GetExtension(m.Options, options.E_Openapiv3Operation).(*options.Operation)
 					if ok {
@@ -803,6 +830,13 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 						responses = extractOpenAPIV3ResponsesFromProtoExtension(operation, errorSchemaRef)
 						if successResp, ok := operation.GetResponses()[successStatusCode]; ok && successResp != nil {
 							successResponseExamples = successResp.GetExamples()
+						}
+						if len(operation.Security) > 0 {
+							reqs, err := protoSecurityRequirements(operation.Security)
+							if err != nil {
+								return nil, nil, err
+							}
+							operationSecurity = &reqs
 						}
 						// Emit externalDocs only when a real url is present (url is the
 						// required field; description is optional). Otherwise it stays
@@ -854,6 +888,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 					Deprecated:          deprecated,
 					Tags:                tags,
 					Responses:           responses,
+					Security:            operationSecurity,
 					OpenAPIV3Extensions: extensions,
 					ExternalDocs:        externalDocs,
 				}
@@ -942,6 +977,222 @@ func removePathParameter(params []OpenAPIV3ParameterRef, name string) []OpenAPIV
 		filtered = append(filtered, p)
 	}
 	return filtered
+}
+
+func applyFileSwaggerOptions(reg *descriptor.Registry, file *descriptor.File, doc *OpenAPIV3Document) error {
+	spb := getFileOpenAPIOptionv3(reg, file)
+	if spb == nil {
+		return nil
+	}
+	if spb.SecurityDefinitions != nil && len(spb.SecurityDefinitions.Security) > 0 {
+		if doc.Components == nil {
+			doc.Components = &OpenAPIV3Components{}
+		}
+		if doc.Components.SecuritySchemes == nil {
+			doc.Components.SecuritySchemes = make(map[string]OpenAPIV3SecuritySchemeRef, len(spb.SecurityDefinitions.Security))
+		}
+		keys := make([]string, 0, len(spb.SecurityDefinitions.Security))
+		for k := range spb.SecurityDefinitions.Security {
+			keys = append(keys, k)
+		}
+		sort.Strings(keys)
+		for _, k := range keys {
+			doc.Components.SecuritySchemes[k] = OpenAPIV3SecuritySchemeRef{
+				SecurityScheme: protoSecuritySchemeToOpenAPIV3(spb.SecurityDefinitions.Security[k]),
+			}
+		}
+	}
+	if len(spb.Security) > 0 {
+		reqs, err := protoSecurityRequirements(spb.Security)
+		if err != nil {
+			return err
+		}
+		doc.Security = reqs
+	}
+	return nil
+}
+
+func getFileOpenAPIOptionv3(reg *descriptor.Registry, file *descriptor.File) *options.Swagger {
+	if file != nil && file.Options != nil && proto.HasExtension(file.Options, options.E_Openapiv3Swagger) {
+		if spb, ok := proto.GetExtension(file.Options, options.E_Openapiv3Swagger).(*options.Swagger); ok && spb != nil {
+			return spb
+		}
+	}
+	if reg != nil && file != nil && file.Name != nil {
+		if spb, ok := reg.GetOpenAPIFileOptionv3(file.GetName()); ok {
+			return spb
+		}
+	}
+	return nil
+}
+
+func protoSecurityRequirements(reqs []*options.SecurityRequirement) ([]OpenAPIV3SecurityReq, error) {
+	out := make([]OpenAPIV3SecurityReq, 0, len(reqs))
+	for _, secReq := range reqs {
+		newSecReq := OpenAPIV3SecurityReq{}
+		for k, v := range secReq.GetSecurityRequirement() {
+			if v == nil {
+				return nil, fmt.Errorf("malformed security requirement spec for key %q; value is required", k)
+			}
+			scopes := make([]string, len(v.Scope))
+			copy(scopes, v.Scope)
+			newSecReq[k] = scopes
+		}
+		// An empty SecurityRequirement is the OpenAPI override that clears
+		// inherited document security (`security: []`). Do not emit `{}`.
+		if len(newSecReq) == 0 {
+			continue
+		}
+		out = append(out, newSecReq)
+	}
+	return out, nil
+}
+
+func protoSecuritySchemeToOpenAPIV3(sec *options.SecurityScheme) *OpenAPIV3SecurityScheme {
+	if sec == nil {
+		return nil
+	}
+	out := &OpenAPIV3SecurityScheme{Description: sec.Description}
+	if len(sec.Extensions) > 0 {
+		out.OpenAPIV3Extensions = make(OpenAPIV3Extensions, len(sec.Extensions))
+		for k, v := range sec.Extensions {
+			out.OpenAPIV3Extensions[k] = v
+		}
+	}
+	switch sec.Type {
+	case options.SecurityScheme_TYPE_BASIC:
+		out.Type = "http"
+		out.Scheme = "basic"
+	case options.SecurityScheme_TYPE_API_KEY:
+		out.Type = "apiKey"
+		out.Name = sec.Name
+		switch sec.In {
+		case options.SecurityScheme_IN_QUERY:
+			out.In = "query"
+		case options.SecurityScheme_IN_HEADER:
+			out.In = "header"
+		}
+	case options.SecurityScheme_TYPE_OAUTH2:
+		out.Type = "oauth2"
+		flow := &OpenAPIV3OAuthFlow{
+			AuthorizationURL: sec.AuthorizationUrl,
+			TokenURL:         sec.TokenUrl,
+			Scopes:           map[string]string{},
+		}
+		if sec.Scopes != nil {
+			for k, v := range sec.Scopes.Scope {
+				flow.Scopes[k] = v
+			}
+		}
+		out.Flows = &OpenAPIV3OAuthFlows{}
+		switch sec.Flow {
+		case options.SecurityScheme_FLOW_IMPLICIT:
+			out.Flows.Implicit = flow
+		case options.SecurityScheme_FLOW_PASSWORD:
+			out.Flows.Password = flow
+		case options.SecurityScheme_FLOW_APPLICATION:
+			out.Flows.ClientCredentials = flow
+		case options.SecurityScheme_FLOW_ACCESS_CODE:
+			out.Flows.AuthorizationCode = flow
+		}
+	}
+	return out
+}
+
+// componentizeSharedParameters moves identical parameters that appear more than
+// once into components.parameters and replaces each use with a $ref.
+func componentizeSharedParameters(paths OpenAPIV3Paths) map[string]OpenAPIV3ParameterRef {
+	type occ struct {
+		list *[]OpenAPIV3ParameterRef
+		idx  int
+	}
+	groups := map[string][]occ{}
+	fingerprints := map[string]OpenAPIV3Parameter{}
+
+	visit := func(list *[]OpenAPIV3ParameterRef) {
+		if list == nil {
+			return
+		}
+		for i := range *list {
+			p := &(*list)[i]
+			if p.Ref != "" || p.OpenAPIV3Parameter == nil || p.In != "path" {
+				continue
+			}
+			fp, err := parameterFingerprint(*p.OpenAPIV3Parameter)
+			if err != nil {
+				continue
+			}
+			if _, ok := fingerprints[fp]; !ok {
+				fingerprints[fp] = *p.OpenAPIV3Parameter
+			}
+			groups[fp] = append(groups[fp], occ{list: list, idx: i})
+		}
+	}
+
+	pathKeys := make([]string, 0, len(paths))
+	for k := range paths {
+		pathKeys = append(pathKeys, k)
+	}
+	sort.Strings(pathKeys)
+	for _, k := range pathKeys {
+		item := paths[k]
+		visit(&item.Parameters)
+		for _, op := range item.operations() {
+			visit(&op.Parameters)
+		}
+	}
+
+	usedNames := map[string]struct{}{}
+	components := map[string]OpenAPIV3ParameterRef{}
+	fpKeys := make([]string, 0, len(groups))
+	for fp := range groups {
+		fpKeys = append(fpKeys, fp)
+	}
+	sort.Strings(fpKeys)
+
+	for _, fp := range fpKeys {
+		occs := groups[fp]
+		if len(occs) < 2 {
+			continue
+		}
+		param := fingerprints[fp]
+		base := param.Name
+		if param.In != "" && param.In != "path" {
+			base = param.Name + "_" + param.In
+		}
+		name := uniqueParamComponentName(base, usedNames)
+		usedNames[name] = struct{}{}
+		pCopy := param
+		components[name] = OpenAPIV3ParameterRef{OpenAPIV3Parameter: &pCopy}
+		ref := "#/components/parameters/" + name
+		for _, o := range occs {
+			(*o.list)[o.idx] = OpenAPIV3ParameterRef{Ref: ref}
+		}
+	}
+	if len(components) == 0 {
+		return nil
+	}
+	return components
+}
+
+func uniqueParamComponentName(base string, used map[string]struct{}) string {
+	if _, ok := used[base]; !ok {
+		return base
+	}
+	for i := 2; ; i++ {
+		n := fmt.Sprintf("%s_%d", base, i)
+		if _, ok := used[n]; !ok {
+			return n
+		}
+	}
+}
+
+func parameterFingerprint(p OpenAPIV3Parameter) (string, error) {
+	b, err := json.Marshal(p)
+	if err != nil {
+		return "", err
+	}
+	return string(b), nil
 }
 
 func sanitizeURLPath(urlPath string) string {
@@ -2703,6 +2954,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			Title:               title,
 			Description:         description,
 			Deprecated:          deprecated,
+			Pattern:             byteFieldPattern(pattern),
 			MaxLength:           maxLength,
 			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
@@ -2770,7 +3022,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 					schemaCopy.ExclusiveMinimum = exclusiveMinimumPtr
 				}
 				schemaCopy.MultipleOf = multipleOf
-				schemaCopy.Pattern = pattern
+				applyOpenAPIFieldPattern(&schemaCopy, pattern)
 				schemaCopy.MaxLength = maxLength
 				// Only string wrappers carry minLength; non-string wrappers omit it.
 				if schemaCopy.Type == "string" {
@@ -3221,6 +3473,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			Title:               title,
 			Description:         description,
 			Deprecated:          deprecated,
+			Pattern:             byteFieldPattern(pattern),
 			MaxLength:           maxLength,
 			MinLength:           uint64Ptr(minLength),
 			ReadOnly:            readOnly,
@@ -3286,7 +3539,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 					schemaCopy.ExclusiveMinimum = exclusiveMinimumPtr
 				}
 				schemaCopy.MultipleOf = multipleOf
-				schemaCopy.Pattern = pattern
+				applyOpenAPIFieldPattern(&schemaCopy, pattern)
 				schemaCopy.MaxLength = maxLength
 				// Only string wrappers carry minLength; non-string wrappers omit it.
 				if schemaCopy.Type == "string" {

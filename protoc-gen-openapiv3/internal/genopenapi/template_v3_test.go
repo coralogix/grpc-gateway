@@ -9,12 +9,14 @@ import (
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
+	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor/openapiconfigv3"
 	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
 	"google.golang.org/genproto/googleapis/api/visibility"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/types/descriptorpb"
+	"google.golang.org/protobuf/types/known/structpb"
 	"google.golang.org/protobuf/types/known/timestamppb"
 	"google.golang.org/protobuf/types/known/wrapperspb"
 	"google.golang.org/protobuf/types/pluginpb"
@@ -5695,4 +5697,277 @@ func TestHoistSharedPathParameters(t *testing.T) {
 			t.Errorf("GET parameters = %v, want empty", got)
 		}
 	})
+}
+
+func TestByteFieldDefaultPattern(t *testing.T) {
+	field := makeFieldWithExtension("blob", descriptorpb.FieldDescriptorProto_TYPE_BYTES, nil)
+	withRefs, _ := buildPropertySchemaWithReferencesFromFieldType(field, nil, map[string]string{})
+	plain, _ := buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, nil)
+	for name, s := range map[string]*OpenAPIV3SchemaRef{"with-refs": withRefs, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Format != "byte" {
+				t.Errorf("format = %q, want byte", s.Format)
+			}
+			if s.Pattern != defaultByteFieldPattern {
+				t.Errorf("pattern = %q, want %q", s.Pattern, defaultByteFieldPattern)
+			}
+		})
+	}
+}
+
+func TestByteFieldAnnotatedPatternWins(t *testing.T) {
+	const override = "^[A-F0-9]+$"
+	field := makeFieldWithExtension("blob", descriptorpb.FieldDescriptorProto_TYPE_BYTES, &options.JSONSchema{
+		Pattern: override,
+	})
+	withRefs, _ := buildPropertySchemaWithReferencesFromFieldType(field, nil, map[string]string{})
+	if withRefs.Pattern != override {
+		t.Errorf("pattern = %q, want annotation override %q", withRefs.Pattern, override)
+	}
+}
+
+func TestBytesValueWellKnownPattern(t *testing.T) {
+	schema := wellKnownTypesToOpenAPIV3SchemaMapping[".google.protobuf.BytesValue"]
+	if schema == nil || schema.Pattern != defaultByteFieldPattern {
+		t.Errorf("BytesValue pattern = %v, want %q", schema, defaultByteFieldPattern)
+	}
+}
+
+func TestBytesValueFieldKeepsDefaultPattern(t *testing.T) {
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	field := &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String("blob"),
+			Type:     &msgType,
+			TypeName: proto.String(".google.protobuf.BytesValue"),
+			Options:  &descriptorpb.FieldOptions{},
+		},
+	}
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for name, s := range map[string]*OpenAPIV3Schema{"with-refs": withRefs, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Format != "byte" {
+				t.Errorf("format = %q, want byte", s.Format)
+			}
+			if s.Pattern != defaultByteFieldPattern {
+				t.Errorf("pattern = %q, want default %q", s.Pattern, defaultByteFieldPattern)
+			}
+		})
+	}
+}
+
+func TestBytesValueFieldAnnotatedPatternWins(t *testing.T) {
+	const override = "^[A-F0-9]+$"
+	msgType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	opts := &descriptorpb.FieldOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Field, &options.JSONSchema{Pattern: override})
+	field := &descriptor.Field{
+		FieldDescriptorProto: &descriptorpb.FieldDescriptorProto{
+			Name:     proto.String("blob"),
+			Type:     &msgType,
+			TypeName: proto.String(".google.protobuf.BytesValue"),
+			Options:  opts,
+		},
+	}
+	withRefs, plain := inlineSchemasBothSwitches(t, field)
+	for name, s := range map[string]*OpenAPIV3Schema{"with-refs": withRefs, "plain": plain} {
+		t.Run(name, func(t *testing.T) {
+			if s.Pattern != override {
+				t.Errorf("pattern = %q, want %q", s.Pattern, override)
+			}
+		})
+	}
+}
+
+func TestComponentizeSharedParameters(t *testing.T) {
+	shared := hoistPathParam("id", "Resource id.")
+	unique := hoistPathParam("rev", "Revision.")
+	paths := OpenAPIV3Paths{
+		"/v1/things/{id}": {
+			Get:    &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{shared}},
+			Delete: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{shared}},
+		},
+		"/v1/other/{id}": {
+			Get: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{shared, unique}},
+		},
+	}
+	components := componentizeSharedParameters(paths)
+	if _, ok := components["id"]; !ok {
+		t.Fatalf("components = %v, want key id", keysOf(components))
+	}
+	if paths["/v1/things/{id}"].Get.Parameters[0].Ref != "#/components/parameters/id" {
+		t.Errorf("GET param ref = %q", paths["/v1/things/{id}"].Get.Parameters[0].Ref)
+	}
+	if paths["/v1/other/{id}"].Get.Parameters[1].Ref != "" {
+		t.Errorf("unique param should stay inline, got ref %q", paths["/v1/other/{id}"].Get.Parameters[1].Ref)
+	}
+}
+
+func TestComponentizeSharedParametersSkipsQuery(t *testing.T) {
+	q := hoistQueryParam("filter")
+	paths := OpenAPIV3Paths{
+		"/v1/a": {Get: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{q}}},
+		"/v1/b": {Get: &OpenAPIV3Operation{Parameters: []OpenAPIV3ParameterRef{q}}},
+	}
+	if components := componentizeSharedParameters(paths); components != nil {
+		t.Errorf("query params must stay inline, got components %v", keysOf(components))
+	}
+}
+
+func keysOf(m map[string]OpenAPIV3ParameterRef) []string {
+	keys := make([]string, 0, len(m))
+	for k := range m {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	return keys
+}
+
+func TestApplyFileSwaggerOptionsAPIKey(t *testing.T) {
+	opts := &descriptorpb.FileOptions{}
+	proto.SetExtension(opts, options.E_Openapiv3Swagger, &options.Swagger{
+		SecurityDefinitions: &options.SecurityDefinitions{
+			Security: map[string]*options.SecurityScheme{
+				"ApiKeyAuth": {
+					Type:        options.SecurityScheme_TYPE_API_KEY,
+					In:          options.SecurityScheme_IN_HEADER,
+					Name:        "Authorization",
+					Description: "API key",
+				},
+			},
+		},
+		Security: []*options.SecurityRequirement{{
+			SecurityRequirement: map[string]*options.SecurityRequirement_SecurityRequirementValue{
+				"ApiKeyAuth": {},
+			},
+		}},
+	})
+	file := &descriptor.File{FileDescriptorProto: &descriptorpb.FileDescriptorProto{Options: opts}}
+	doc := &OpenAPIV3Document{Components: &OpenAPIV3Components{}}
+	if err := applyFileSwaggerOptions(nil, file, doc); err != nil {
+		t.Fatal(err)
+	}
+	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
+	if !ok || scheme.SecurityScheme == nil {
+		t.Fatalf("missing ApiKeyAuth scheme: %+v", doc.Components.SecuritySchemes)
+	}
+	if scheme.SecurityScheme.Type != "apiKey" || scheme.SecurityScheme.In != "header" || scheme.SecurityScheme.Name != "Authorization" {
+		t.Errorf("scheme = %+v", scheme.SecurityScheme)
+	}
+	if len(doc.Security) != 1 {
+		t.Fatalf("security = %#v", doc.Security)
+	}
+	if _, ok := doc.Security[0]["ApiKeyAuth"]; !ok {
+		t.Errorf("document security = %#v", doc.Security)
+	}
+}
+
+func TestApplyFileSwaggerOptionsFromRegistry(t *testing.T) {
+	fileProto := &descriptorpb.FileDescriptorProto{
+		Name:    proto.String("security.proto"),
+		Package: proto.String("example"),
+		Syntax:  proto.String("proto3"),
+		Options: &descriptorpb.FileOptions{GoPackage: proto.String("example.com/security;security")},
+	}
+	reg := descriptor.NewRegistry()
+	if err := reg.Load(&pluginpb.CodeGeneratorRequest{ProtoFile: []*descriptorpb.FileDescriptorProto{fileProto}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := reg.RegisterOpenAPIOptionsv3(&openapiconfigv3.OpenAPIOptions{
+		File: []*openapiconfigv3.OpenAPIFileOption{{
+			File: "security.proto",
+			Option: &options.Swagger{
+				SecurityDefinitions: &options.SecurityDefinitions{
+					Security: map[string]*options.SecurityScheme{
+						"ApiKeyAuth": {
+							Type: options.SecurityScheme_TYPE_API_KEY,
+							In:   options.SecurityScheme_IN_HEADER,
+							Name: "Authorization",
+						},
+					},
+				},
+				Security: []*options.SecurityRequirement{{
+					SecurityRequirement: map[string]*options.SecurityRequirement_SecurityRequirementValue{
+						"ApiKeyAuth": {},
+					},
+				}},
+			},
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	file := &descriptor.File{FileDescriptorProto: fileProto}
+	doc := &OpenAPIV3Document{Components: &OpenAPIV3Components{}}
+	if err := applyFileSwaggerOptions(reg, file, doc); err != nil {
+		t.Fatal(err)
+	}
+	scheme, ok := doc.Components.SecuritySchemes["ApiKeyAuth"]
+	if !ok || scheme.SecurityScheme == nil {
+		t.Fatalf("registry file option was ignored: %+v", doc.Components.SecuritySchemes)
+	}
+	if len(doc.Security) != 1 {
+		t.Fatalf("security = %#v", doc.Security)
+	}
+}
+
+func TestProtoSecuritySchemeBasicAndOAuth(t *testing.T) {
+	basic := protoSecuritySchemeToOpenAPIV3(&options.SecurityScheme{Type: options.SecurityScheme_TYPE_BASIC})
+	if basic.Type != "http" || basic.Scheme != "basic" {
+		t.Errorf("basic = %+v", basic)
+	}
+	oauth := protoSecuritySchemeToOpenAPIV3(&options.SecurityScheme{
+		Type:             options.SecurityScheme_TYPE_OAUTH2,
+		Flow:             options.SecurityScheme_FLOW_ACCESS_CODE,
+		AuthorizationUrl: "https://example/auth",
+		TokenUrl:         "https://example/token",
+		Scopes:           &options.Scopes{Scope: map[string]string{"read": "Read"}},
+	})
+	if oauth.Type != "oauth2" || oauth.Flows == nil || oauth.Flows.AuthorizationCode == nil {
+		t.Fatalf("oauth = %+v", oauth)
+	}
+	if oauth.Flows.AuthorizationCode.TokenURL != "https://example/token" {
+		t.Errorf("token URL = %q", oauth.Flows.AuthorizationCode.TokenURL)
+	}
+}
+
+func TestProtoSecuritySchemeCopiesExtensions(t *testing.T) {
+	sec := protoSecuritySchemeToOpenAPIV3(&options.SecurityScheme{
+		Type: options.SecurityScheme_TYPE_API_KEY,
+		In:   options.SecurityScheme_IN_HEADER,
+		Name: "Authorization",
+		Extensions: map[string]*structpb.Value{
+			"x-stability": structpb.NewStringValue("preview"),
+		},
+	})
+	if sec.OpenAPIV3Extensions["x-stability"] == nil {
+		t.Fatalf("extensions not copied: %+v", sec.OpenAPIV3Extensions)
+	}
+}
+
+func TestProtoSecurityRequirementsDropsEmpty(t *testing.T) {
+	reqs, err := protoSecurityRequirements([]*options.SecurityRequirement{
+		{}, // operation-level override: clear inherited security
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 0 {
+		t.Fatalf("empty requirement must not emit {{}}, got %#v", reqs)
+	}
+}
+
+func TestOpenAPIV3OperationEmptySecurityMarshalsAsArray(t *testing.T) {
+	empty := []OpenAPIV3SecurityReq{}
+	op := OpenAPIV3Operation{
+		OperationID: "public",
+		Responses:   OpenAPIV3Responses{},
+		Security:    &empty,
+	}
+	b, err := json.Marshal(op)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `"security":[]`) {
+		t.Errorf("want security:[]; json=%s", b)
+	}
 }
