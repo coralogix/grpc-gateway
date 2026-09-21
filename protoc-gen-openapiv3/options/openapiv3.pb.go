@@ -1100,7 +1100,11 @@ type AdditionalBinding struct {
 	// will change if the bindings are reordered. Prefer setting it explicitly for
 	// any binding that reaches a published spec.
 	//
-	// Two bindings of the same method may not resolve to the same operation ID.
+	// Two bindings of the same method may not resolve to the same operation ID;
+	// that is rejected at generation time. Uniqueness across the whole document
+	// is not checked, so take care that the suffix does not complete the name of
+	// another RPC -- `GetUser` with `name_suffix: "ByEmail"` collides with a
+	// separate `GetUserByEmail` method.
 	NameSuffix string `protobuf:"bytes,1,opt,name=name_suffix,json=nameSuffix,proto3" json:"name_suffix,omitempty"`
 	// Visibility restriction for this binding, using the same labels as
 	// `google.api.VisibilityRule.restriction` (for example "DEV" or "PREVIEW").
@@ -1183,7 +1187,11 @@ type AdditionalBinding_builder struct {
 	// will change if the bindings are reordered. Prefer setting it explicitly for
 	// any binding that reaches a published spec.
 	//
-	// Two bindings of the same method may not resolve to the same operation ID.
+	// Two bindings of the same method may not resolve to the same operation ID;
+	// that is rejected at generation time. Uniqueness across the whole document
+	// is not checked, so take care that the suffix does not complete the name of
+	// another RPC -- `GetUser` with `name_suffix: "ByEmail"` collides with a
+	// separate `GetUserByEmail` method.
 	NameSuffix string
 	// Visibility restriction for this binding, using the same labels as
 	// `google.api.VisibilityRule.restriction` (for example "DEV" or "PREVIEW").
