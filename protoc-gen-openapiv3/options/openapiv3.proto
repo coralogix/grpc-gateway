@@ -230,8 +230,15 @@ message AdditionalBinding {
   // URL for an existing method ship hidden, while the method and its main
   // binding stay published -- a method-level restriction would hide both.
   //
+  // Named `restriction` rather than `visibility` to match
+  // `google.api.VisibilityRule`, and so that tooling which discovers the tiers
+  // in use by scanning protos for `restriction: "..."` finds these too. A
+  // differently named field would be invisible to such a scan, and a binding
+  // carrying a tier nothing else uses would then be dropped from the very
+  // spec that is meant to cover every tier.
+  //
   // Empty means no restriction: the binding is always visible.
-  string visibility = 2;
+  string restriction = 2;
 }
 
 // `Parameters` is a representation of OpenAPI v2 specification's parameters object.

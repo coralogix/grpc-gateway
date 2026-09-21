@@ -3755,10 +3755,10 @@ func inlineHTTPRule(m *descriptor.Method) *httpoptions.HttpRule {
 // shared isVisible helper expects, so a binding is filtered by exactly the same
 // selector logic as a service, method, field or enum value.
 func visibilityRuleFor(o *options.AdditionalBinding) *visibility.VisibilityRule {
-	if o == nil || o.GetVisibility() == "" {
+	if o == nil || o.GetRestriction() == "" {
 		return nil
 	}
-	return &visibility.VisibilityRule{Restriction: o.GetVisibility()}
+	return &visibility.VisibilityRule{Restriction: o.GetRestriction()}
 }
 
 // additionalBindingSuffix returns what to append to a binding's operation ID so

@@ -6041,7 +6041,7 @@ func TestVisibilityRuleFor(t *testing.T) {
 	if got := visibilityRuleFor(&options.AdditionalBinding{}); got != nil {
 		t.Errorf("visibilityRuleFor(empty) = %v, want nil so the binding stays visible", got)
 	}
-	got := visibilityRuleFor(&options.AdditionalBinding{Visibility: "DEV"})
+	got := visibilityRuleFor(&options.AdditionalBinding{Restriction: "DEV"})
 	if got == nil || got.Restriction != "DEV" {
 		t.Errorf("visibilityRuleFor(DEV) = %v, want restriction DEV", got)
 	}
@@ -6059,7 +6059,7 @@ func TestAdditionalBindingOptionsFor(t *testing.T) {
 	})
 
 	t.Run("one option maps to the additional binding", func(t *testing.T) {
-		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{NameSuffix: "ForCurrentTeam", Visibility: "DEV"})
+		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{NameSuffix: "ForCurrentTeam", Restriction: "DEV"})
 		got, err := additionalBindingOptionsFor(m)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -6076,7 +6076,7 @@ func TestAdditionalBindingOptionsFor(t *testing.T) {
 	// Binding.Index is not the additional_bindings position. Options must still
 	// land on the binding the proto declared them for.
 	t.Run("external rules do not shift the mapping", func(t *testing.T) {
-		m := methodWithExternalRules(t, "GetUser", 1, 1, &options.AdditionalBinding{NameSuffix: "ForCurrentTeam", Visibility: "DEV"})
+		m := methodWithExternalRules(t, "GetUser", 1, 1, &options.AdditionalBinding{NameSuffix: "ForCurrentTeam", Restriction: "DEV"})
 		got, err := additionalBindingOptionsFor(m)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
@@ -6112,8 +6112,8 @@ func TestAdditionalBindingOptionsFor(t *testing.T) {
 
 	t.Run("repeated empty suffixes are allowed", func(t *testing.T) {
 		m := methodWithAdditionalBindings(t, "GetUser", 2,
-			&options.AdditionalBinding{Visibility: "DEV"},
-			&options.AdditionalBinding{Visibility: "DEV"},
+			&options.AdditionalBinding{Restriction: "DEV"},
+			&options.AdditionalBinding{Restriction: "DEV"},
 		)
 		if _, err := additionalBindingOptionsFor(m); err != nil {
 			t.Errorf("unexpected error: %v, empty suffixes fall back to distinct positions", err)
@@ -6144,7 +6144,7 @@ func TestAdditionalBindingOptionsFor(t *testing.T) {
 	})
 
 	t.Run("options without an inline http rule are an error", func(t *testing.T) {
-		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{Visibility: "DEV"})
+		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{Restriction: "DEV"})
 		proto.ClearExtension(m.Options, httpoptions.E_Http)
 		if _, err := additionalBindingOptionsFor(m); err == nil {
 			t.Error("want an error: the entries describe the method's own additional_bindings")
@@ -6168,7 +6168,7 @@ func TestAdditionalBindingOptionsFor(t *testing.T) {
 	})
 
 	t.Run("raw accessor tolerates a missing inline http rule", func(t *testing.T) {
-		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{Visibility: "DEV"})
+		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{Restriction: "DEV"})
 		proto.ClearExtension(m.Options, httpoptions.E_Http)
 		if got := rawAdditionalBindingOptions(m); len(got) != 1 {
 			t.Errorf("got %d entries, want 1", len(got))
@@ -6186,7 +6186,7 @@ func TestAdditionalBindingOptionsFor(t *testing.T) {
 			},
 		}
 		proto.SetExtension(m.Options, options.E_Openapiv3Operation, &options.Operation{
-			AdditionalBinding: []*options.AdditionalBinding{{Visibility: "DEV"}},
+			AdditionalBinding: []*options.AdditionalBinding{{Restriction: "DEV"}},
 		})
 		if got := rawAdditionalBindingOptions(m); len(got) != 1 {
 			t.Errorf("raw accessor got %d entries, want 1 without touching bindings", len(got))
