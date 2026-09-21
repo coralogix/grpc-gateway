@@ -793,17 +793,24 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 			}
 
 			var additionalBindingOpts map[int]*options.AdditionalBinding
-			if param.reg.IsIgnoreAdditionalBindings() && mainBinding != nil {
+			if param.reg.IsIgnoreAdditionalBindings() {
 				// The annotation is inert in this mode -- the bindings it
 				// describes never reach the document. Report that it has no
 				// effect, rather than let a route quietly go missing, but do
 				// not validate it: failing generation over a feature this mode
 				// has switched off would be surprising, and the run that does
 				// emit those bindings validates them.
+				//
+				// This must not be gated on a main binding existing. An
+				// unbound method has none, and falling through to the
+				// validating path would fail the build in the very mode that
+				// promises not to.
 				if len(rawAdditionalBindingOptions(m)) > 0 {
 					log.Printf("Warning: %s.%s declares additional_binding options, but ignore_additional_bindings is set; they have no effect", svc.GetName(), m.GetName())
 				}
-				bindings = []*descriptor.Binding{mainBinding}
+				if mainBinding != nil {
+					bindings = []*descriptor.Binding{mainBinding}
+				}
 
 			} else {
 				var err error

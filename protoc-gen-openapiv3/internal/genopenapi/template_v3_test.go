@@ -6174,4 +6174,25 @@ func TestAdditionalBindingOptionsFor(t *testing.T) {
 			t.Errorf("got %d entries, want 1", len(got))
 		}
 	})
+
+	// An unbound RPC has no bindings at all. ignore_additional_bindings takes
+	// its branch on the flag alone, so this never reaches the validating path
+	// there -- but outside that mode it must still be rejected.
+	t.Run("unbound method with options", func(t *testing.T) {
+		m := &descriptor.Method{
+			MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+				Name:    proto.String("Unbound"),
+				Options: &descriptorpb.MethodOptions{},
+			},
+		}
+		proto.SetExtension(m.Options, options.E_Openapiv3Operation, &options.Operation{
+			AdditionalBinding: []*options.AdditionalBinding{{Visibility: "DEV"}},
+		})
+		if got := rawAdditionalBindingOptions(m); len(got) != 1 {
+			t.Errorf("raw accessor got %d entries, want 1 without touching bindings", len(got))
+		}
+		if _, err := additionalBindingOptionsFor(m); err == nil {
+			t.Error("the validating path must reject options on a method with no http rule")
+		}
+	})
 }
