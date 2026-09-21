@@ -1081,12 +1081,20 @@ type AdditionalBinding_builder struct {
 	// separate `GetUserByEmail` method.
 	NameSuffix string
 	// Visibility restriction for this binding, using the same labels as
-	// `google.api.VisibilityRule.restriction` (for example "DEV" or "PREVIEW").
+	// `google.api.VisibilityRule.restriction`. In practice "DEV": the binding is
+	// hidden until the restriction is removed.
 	//
 	// The binding is omitted from the generated document unless the restriction
 	// is selected by `visibility_restriction_selectors`. This is what lets a new
 	// URL for an existing method ship hidden, while the method and its main
 	// binding stay published -- a method-level restriction would hide both.
+	//
+	// A "published but experimental" tier does not work per binding. Such a tier
+	// is usually paired with a marker extension on the operation, and this
+	// generator has only one `openapiv3_operation` per method: the marker would
+	// land on every binding, including the published one. Marking a binding
+	// experimental therefore needs a binding-level marker that does not exist
+	// yet. Use "DEV" and publish outright.
 	//
 	// Named `restriction` rather than `visibility` to match
 	// `google.api.VisibilityRule`, and so that tooling which discovers the tiers
