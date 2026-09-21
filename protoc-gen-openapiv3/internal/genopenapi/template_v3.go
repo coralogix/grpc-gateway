@@ -16,6 +16,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/casing"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
+	httpoptions "google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/genproto/googleapis/api/visibility"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -795,7 +796,7 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 			// below: with ignore_additional_bindings the slice holds only the
 			// main binding, and an annotation for a binding that really exists
 			// must not be reported as dangling.
-			additionalBindingOpts, err := getAdditionalBindingOptions(m)
+			additionalBindingOpts, err := additionalBindingOptionsFor(m)
 			if err != nil {
 				return nil, nil, err
 			}
@@ -813,12 +814,10 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				bindings = m.Bindings
 			}
 			for _, b := range bindings {
-				// Index 0 is the main binding and is never addressed by
-				// additional_binding; entry i describes binding i+1.
-				var bindingOpts *options.AdditionalBinding
-				if b.Index > 0 && b.Index <= len(additionalBindingOpts) {
-					bindingOpts = additionalBindingOpts[b.Index-1]
-				}
+				// Keyed by Binding.Index; only bindings contributed by the
+				// method's own additional_bindings appear, so a main binding or
+				// an externally configured one resolves to nil.
+				bindingOpts := additionalBindingOpts[b.Index]
 				if !isVisible(visibilityRuleFor(bindingOpts), param.reg) {
 					continue
 				}
@@ -3648,15 +3647,24 @@ func isEmptyOpenAPIV3Schema(schema *OpenAPIV3Schema) bool {
 	return schema == nil || reflect.DeepEqual(*schema, OpenAPIV3Schema{})
 }
 
-// getAdditionalBindingOptions returns the method's per-binding options, entry i
-// describing additional binding i+1 (declaration order). google.api.HttpRule
-// has no extension range, so options for an individual additional_bindings
-// entry have to be carried on the method and matched back by position.
+// additionalBindingOptionsFor maps a method's additional_binding entries onto
+// the bindings they actually describe, keyed by descriptor.Binding.Index.
 //
-// Declaring more entries than there are additional bindings is an error: the
-// surplus describes nothing, and the most likely cause is a binding that was
-// removed while its options were left behind.
-func getAdditionalBindingOptions(m *descriptor.Method) ([]*options.AdditionalBinding, error) {
+// google.api.HttpRule has no extension range, so options for an individual
+// additional_bindings entry have to be carried on the method and matched back
+// by position. The flattened Binding.Index is not that position: a method can
+// also carry external HTTP rules from a service config, and those are
+// prepended before every rule is flattened into one indexed slice. Entry i must
+// therefore be resolved against the inline google.api.http rule's own
+// additional_bindings, not against Binding.Index directly.
+//
+// The inline rule is appended last (internal/descriptor.Registry.loadServices),
+// so its bindings are the final 1+len(additional_bindings) entries: one main
+// binding followed by its additional ones, in declaration order.
+//
+// Declaring more entries than the inline rule has additional bindings is an
+// error, as is two bindings resolving to the same operation ID.
+func additionalBindingOptionsFor(m *descriptor.Method) (map[int]*options.AdditionalBinding, error) {
 	if m == nil || m.Options == nil {
 		return nil, nil
 	}
@@ -3672,36 +3680,60 @@ func getAdditionalBindingOptions(m *descriptor.Method) ([]*options.AdditionalBin
 		return nil, nil
 	}
 
-	additional := 0
-	for _, b := range m.Bindings {
-		if b.Index > 0 {
-			additional++
-		}
+	inline := inlineHTTPRule(m)
+	if inline == nil {
+		// The entries sit beside google.api.http in the proto. Without one there
+		// is nothing they can be said to describe -- refuse rather than guess at
+		// an externally configured rule.
+		return nil, fmt.Errorf("%s: additional_binding declared but the method has no inline google.api.http rule", m.GetName())
 	}
-	if len(opts) > additional {
-		return nil, fmt.Errorf("%s: %d additional_binding option(s) declared but the method has %d additional binding(s)", m.GetName(), len(opts), additional)
+	inlineAdditional := len(inline.GetAdditionalBindings())
+	if len(opts) > inlineAdditional {
+		return nil, fmt.Errorf("%s: %d additional_binding option(s) declared but the method's google.api.http rule has %d additional binding(s)", m.GetName(), len(opts), inlineAdditional)
 	}
 
-	// Compare effective suffixes, not declared ones. A binding with no entry,
-	// or an entry with an empty name_suffix, still resolves to its positional
+	// Bindings contributed by the inline rule: its main binding, then its
+	// additional ones. Anything before that came from an external rule.
+	firstInline := len(m.Bindings) - (1 + inlineAdditional)
+	if firstInline < 0 {
+		return nil, fmt.Errorf("%s: cannot map additional_binding options; expected at least %d bindings, found %d", m.GetName(), 1+inlineAdditional, len(m.Bindings))
+	}
+
+	byIndex := make(map[int]*options.AdditionalBinding, len(opts))
+	for i, o := range opts {
+		b := m.Bindings[firstInline+1+i]
+		byIndex[b.Index] = o
+	}
+
+	// Compare effective suffixes, not declared ones. A binding with no entry, or
+	// an entry with an empty name_suffix, still resolves to its positional
 	// fallback -- so an explicit "2" collides with the binding that falls back
-	// to "2". Walk every additional binding, not just the declared entries.
-	seen := make(map[string]int, additional)
+	// to "2". Walk every binding that can reach the document.
+	seen := make(map[string]int, len(m.Bindings))
 	for _, b := range m.Bindings {
 		if b.Index == 0 {
 			continue
 		}
-		var o *options.AdditionalBinding
-		if b.Index <= len(opts) {
-			o = opts[b.Index-1]
-		}
-		suffix := additionalBindingSuffix(b, o)
+		suffix := additionalBindingSuffix(b, byIndex[b.Index])
 		if prev, ok := seen[suffix]; ok {
 			return nil, fmt.Errorf("%s: additional bindings %d and %d both resolve to operation ID suffix %q; operation IDs must be unique", m.GetName(), prev, b.Index, suffix)
 		}
 		seen[suffix] = b.Index
 	}
-	return opts, nil
+	return byIndex, nil
+}
+
+// inlineHTTPRule returns the google.api.http rule declared on the method
+// itself, or nil when its bindings all come from an external service config.
+func inlineHTTPRule(m *descriptor.Method) *httpoptions.HttpRule {
+	if m.Options == nil || !proto.HasExtension(m.Options, httpoptions.E_Http) {
+		return nil
+	}
+	rule, ok := proto.GetExtension(m.Options, httpoptions.E_Http).(*httpoptions.HttpRule)
+	if !ok {
+		return nil
+	}
+	return rule
 }
 
 // visibilityRuleFor adapts a binding's options to the VisibilityRule shape the

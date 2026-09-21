@@ -11,6 +11,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor/openapiconfigv3"
 	options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
+	httpoptions "google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/genproto/googleapis/api/visibility"
 	"google.golang.org/protobuf/encoding/prototext"
 	"google.golang.org/protobuf/proto"
@@ -5972,22 +5973,38 @@ func TestOpenAPIV3OperationEmptySecurityMarshalsAsArray(t *testing.T) {
 	}
 }
 
-// methodWithAdditionalBindings builds a method carrying `opts` as its
-// additional_binding options and `additional` additional bindings beside the
-// main one.
+// methodWithAdditionalBindings builds a method whose inline google.api.http
+// rule declares `additional` additional bindings, carrying `opts` as its
+// additional_binding options. `external` leading bindings simulate rules that
+// came from a service config, which the registry prepends before flattening.
 func methodWithAdditionalBindings(t *testing.T, name string, additional int, opts ...*options.AdditionalBinding) *descriptor.Method {
+	t.Helper()
+	return methodWithExternalRules(t, name, 0, additional, opts...)
+}
+
+func methodWithExternalRules(t *testing.T, name string, external, additional int, opts ...*options.AdditionalBinding) *descriptor.Method {
 	t.Helper()
 	mo := &descriptorpb.MethodOptions{}
 	if len(opts) > 0 {
 		proto.SetExtension(mo, options.E_Openapiv3Operation, &options.Operation{AdditionalBinding: opts})
 	}
+	rule := &httpoptions.HttpRule{Pattern: &httpoptions.HttpRule_Get{Get: "/main"}}
+	for i := 0; i < additional; i++ {
+		rule.AdditionalBindings = append(rule.AdditionalBindings, &httpoptions.HttpRule{
+			Pattern: &httpoptions.HttpRule_Get{Get: fmt.Sprintf("/additional/%d", i)},
+		})
+	}
+	proto.SetExtension(mo, httpoptions.E_Http, rule)
+
 	m := &descriptor.Method{
 		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
 			Name:    proto.String(name),
 			Options: mo,
 		},
 	}
-	for i := 0; i <= additional; i++ {
+	// External rules first, then the inline rule's main binding and its
+	// additional bindings -- the order the registry produces.
+	for i := 0; i < external+1+additional; i++ {
 		m.Bindings = append(m.Bindings, &descriptor.Binding{Index: i})
 	}
 	return m
@@ -6030,25 +6047,46 @@ func TestVisibilityRuleFor(t *testing.T) {
 	}
 }
 
-func TestGetAdditionalBindingOptions(t *testing.T) {
+func TestAdditionalBindingOptionsFor(t *testing.T) {
 	t.Run("no annotation", func(t *testing.T) {
-		opts, err := getAdditionalBindingOptions(methodWithAdditionalBindings(t, "GetUser", 1))
+		got, err := additionalBindingOptionsFor(methodWithAdditionalBindings(t, "GetUser", 1))
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if opts != nil {
-			t.Errorf("got %v, want nil", opts)
+		if len(got) != 0 {
+			t.Errorf("got %v, want empty", got)
 		}
 	})
 
-	t.Run("one option for one additional binding", func(t *testing.T) {
+	t.Run("one option maps to the additional binding", func(t *testing.T) {
 		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{NameSuffix: "ForCurrentTeam", Visibility: "DEV"})
-		opts, err := getAdditionalBindingOptions(m)
+		got, err := additionalBindingOptionsFor(m)
 		if err != nil {
 			t.Fatalf("unexpected error: %v", err)
 		}
-		if len(opts) != 1 || opts[0].GetNameSuffix() != "ForCurrentTeam" {
-			t.Errorf("got %v, want one entry with suffix ForCurrentTeam", opts)
+		if got[0] != nil {
+			t.Error("the main binding must never receive options")
+		}
+		if got[1].GetNameSuffix() != "ForCurrentTeam" {
+			t.Errorf("binding 1 = %v, want suffix ForCurrentTeam", got[1])
+		}
+	})
+
+	// The registry prepends externally configured rules before flattening, so
+	// Binding.Index is not the additional_bindings position. Options must still
+	// land on the binding the proto declared them for.
+	t.Run("external rules do not shift the mapping", func(t *testing.T) {
+		m := methodWithExternalRules(t, "GetUser", 1, 1, &options.AdditionalBinding{NameSuffix: "ForCurrentTeam", Visibility: "DEV"})
+		got, err := additionalBindingOptionsFor(m)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		// 0 = external rule, 1 = inline main, 2 = inline additional.
+		if got[0] != nil || got[1] != nil {
+			t.Errorf("options leaked onto the external rule or the inline main binding: %v", got)
+		}
+		if got[2].GetNameSuffix() != "ForCurrentTeam" {
+			t.Errorf("binding 2 = %v, want suffix ForCurrentTeam", got[2])
 		}
 	})
 
@@ -6057,7 +6095,7 @@ func TestGetAdditionalBindingOptions(t *testing.T) {
 			&options.AdditionalBinding{NameSuffix: "A"},
 			&options.AdditionalBinding{NameSuffix: "B"},
 		)
-		if _, err := getAdditionalBindingOptions(m); err == nil {
+		if _, err := additionalBindingOptionsFor(m); err == nil {
 			t.Error("want an error when more options are declared than bindings exist")
 		}
 	})
@@ -6067,7 +6105,7 @@ func TestGetAdditionalBindingOptions(t *testing.T) {
 			&options.AdditionalBinding{NameSuffix: "Same"},
 			&options.AdditionalBinding{NameSuffix: "Same"},
 		)
-		if _, err := getAdditionalBindingOptions(m); err == nil {
+		if _, err := additionalBindingOptionsFor(m); err == nil {
 			t.Error("want an error when two bindings resolve to the same operation ID")
 		}
 	})
@@ -6077,7 +6115,7 @@ func TestGetAdditionalBindingOptions(t *testing.T) {
 			&options.AdditionalBinding{Visibility: "DEV"},
 			&options.AdditionalBinding{Visibility: "DEV"},
 		)
-		if _, err := getAdditionalBindingOptions(m); err != nil {
+		if _, err := additionalBindingOptionsFor(m); err != nil {
 			t.Errorf("unexpected error: %v, empty suffixes fall back to distinct positions", err)
 		}
 	})
@@ -6089,7 +6127,7 @@ func TestGetAdditionalBindingOptions(t *testing.T) {
 			&options.AdditionalBinding{},
 			&options.AdditionalBinding{NameSuffix: "2"},
 		)
-		if _, err := getAdditionalBindingOptions(m); err == nil {
+		if _, err := additionalBindingOptionsFor(m); err == nil {
 			t.Error("want an error: an explicit suffix must not collide with another binding's fallback")
 		}
 	})
@@ -6100,8 +6138,16 @@ func TestGetAdditionalBindingOptions(t *testing.T) {
 		m := methodWithAdditionalBindings(t, "GetUser", 3,
 			&options.AdditionalBinding{NameSuffix: "3"},
 		)
-		if _, err := getAdditionalBindingOptions(m); err == nil {
+		if _, err := additionalBindingOptionsFor(m); err == nil {
 			t.Error("want an error: bindings without an entry still take a positional suffix")
+		}
+	})
+
+	t.Run("options without an inline http rule are an error", func(t *testing.T) {
+		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{Visibility: "DEV"})
+		proto.ClearExtension(m.Options, httpoptions.E_Http)
+		if _, err := additionalBindingOptionsFor(m); err == nil {
+			t.Error("want an error: the entries describe the method's own additional_bindings")
 		}
 	})
 }
