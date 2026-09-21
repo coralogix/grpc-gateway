@@ -6081,4 +6081,27 @@ func TestGetAdditionalBindingOptions(t *testing.T) {
 			t.Errorf("unexpected error: %v, empty suffixes fall back to distinct positions", err)
 		}
 	})
+
+	t.Run("explicit suffix colliding with a positional fallback is an error", func(t *testing.T) {
+		// Binding 1 has no name and falls back to "2"; binding 2 names itself
+		// "2". Both resolve to <base>2.
+		m := methodWithAdditionalBindings(t, "GetUser", 2,
+			&options.AdditionalBinding{},
+			&options.AdditionalBinding{NameSuffix: "2"},
+		)
+		if _, err := getAdditionalBindingOptions(m); err == nil {
+			t.Error("want an error: an explicit suffix must not collide with another binding's fallback")
+		}
+	})
+
+	t.Run("explicit suffix colliding with an undeclared binding's fallback is an error", func(t *testing.T) {
+		// Only binding 1 is declared, naming itself "3". Binding 2 has no entry
+		// at all and still falls back to "3".
+		m := methodWithAdditionalBindings(t, "GetUser", 3,
+			&options.AdditionalBinding{NameSuffix: "3"},
+		)
+		if _, err := getAdditionalBindingOptions(m); err == nil {
+			t.Error("want an error: bindings without an entry still take a positional suffix")
+		}
+	})
 }

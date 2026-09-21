@@ -3682,16 +3682,24 @@ func getAdditionalBindingOptions(m *descriptor.Method) ([]*options.AdditionalBin
 		return nil, fmt.Errorf("%s: %d additional_binding option(s) declared but the method has %d additional binding(s)", m.GetName(), len(opts), additional)
 	}
 
-	seen := make(map[string]bool, len(opts))
-	for _, o := range opts {
-		suffix := o.GetNameSuffix()
-		if suffix == "" {
+	// Compare effective suffixes, not declared ones. A binding with no entry,
+	// or an entry with an empty name_suffix, still resolves to its positional
+	// fallback -- so an explicit "2" collides with the binding that falls back
+	// to "2". Walk every additional binding, not just the declared entries.
+	seen := make(map[string]int, additional)
+	for _, b := range m.Bindings {
+		if b.Index == 0 {
 			continue
 		}
-		if seen[suffix] {
-			return nil, fmt.Errorf("%s: duplicate additional_binding name_suffix %q; operation IDs must be unique", m.GetName(), suffix)
+		var o *options.AdditionalBinding
+		if b.Index <= len(opts) {
+			o = opts[b.Index-1]
 		}
-		seen[suffix] = true
+		suffix := additionalBindingSuffix(b, o)
+		if prev, ok := seen[suffix]; ok {
+			return nil, fmt.Errorf("%s: additional bindings %d and %d both resolve to operation ID suffix %q; operation IDs must be unique", m.GetName(), prev, b.Index, suffix)
+		}
+		seen[suffix] = b.Index
 	}
 	return opts, nil
 }
