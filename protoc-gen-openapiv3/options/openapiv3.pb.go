@@ -1108,8 +1108,13 @@ type AdditionalBinding struct {
 	NameSuffix string `protobuf:"bytes,1,opt,name=name_suffix,json=nameSuffix,proto3" json:"name_suffix,omitempty"`
 	// Visibility restriction for this binding, using the same labels as
 	// `google.api.VisibilityRule.restriction`. Any label works that means
-	// "hidden": one to hold a new URL back until it is published, another to
-	// retire an old URL from the documents while it is still served.
+	// "hidden": one to hold this binding back until it is published, another to
+	// drop it from the documents while it is still served.
+	//
+	// It reaches this binding only. The method's main binding has no per-binding
+	// restriction -- a method-level one would hide every binding, this one
+	// included -- so a URL that has to stay reachable belongs in the main
+	// binding, and the URL being staged belongs here.
 	//
 	// The binding is omitted from the generated document unless the restriction
 	// is selected by `visibility_restriction_selectors`. This is what lets a new
@@ -1215,8 +1220,13 @@ type AdditionalBinding_builder struct {
 	NameSuffix string
 	// Visibility restriction for this binding, using the same labels as
 	// `google.api.VisibilityRule.restriction`. Any label works that means
-	// "hidden": one to hold a new URL back until it is published, another to
-	// retire an old URL from the documents while it is still served.
+	// "hidden": one to hold this binding back until it is published, another to
+	// drop it from the documents while it is still served.
+	//
+	// It reaches this binding only. The method's main binding has no per-binding
+	// restriction -- a method-level one would hide every binding, this one
+	// included -- so a URL that has to stay reachable belongs in the main
+	// binding, and the URL being staged belongs here.
 	//
 	// The binding is omitted from the generated document unless the restriction
 	// is selected by `visibility_restriction_selectors`. This is what lets a new
