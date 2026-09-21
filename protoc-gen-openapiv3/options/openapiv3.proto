@@ -223,27 +223,32 @@ message AdditionalBinding {
   // separate `GetUserByEmail` method.
   string name_suffix = 1;
   // Visibility restriction for this binding, using the same labels as
-  // `google.api.VisibilityRule.restriction`. In practice "DEV": the binding is
-  // hidden until the restriction is removed.
+  // `google.api.VisibilityRule.restriction`. Any label works that means
+  // "hidden": one to hold a new URL back until it is published, another to
+  // retire an old URL from the documents while it is still served.
   //
   // The binding is omitted from the generated document unless the restriction
   // is selected by `visibility_restriction_selectors`. This is what lets a new
   // URL for an existing method ship hidden, while the method and its main
   // binding stay published -- a method-level restriction would hide both.
   //
-  // A "published but experimental" tier does not work per binding. Such a tier
-  // is usually paired with a marker extension on the operation, and this
-  // generator has only one `openapiv3_operation` per method: the marker would
-  // land on every binding, including the published one. Marking a binding
-  // experimental therefore needs a binding-level marker that does not exist
-  // yet. Use "DEV" and publish outright.
+  // What does not work per binding is a "published but experimental" tier.
+  // Such a tier is usually paired with a marker extension on the operation,
+  // and this generator has only one `openapiv3_operation` per method: the
+  // marker would land on every binding, including the published one. Marking a
+  // single binding experimental needs a binding-level marker that does not
+  // exist yet. Ship it hidden and publish outright instead.
   //
   // Named `restriction` rather than `visibility` to match
   // `google.api.VisibilityRule`, and so that tooling which discovers the tiers
-  // in use by scanning protos for `restriction: "..."` finds these too. A
+  // in use by scanning protos for that field name finds these too. A
   // differently named field would be invisible to such a scan, and a binding
   // carrying a tier nothing else uses would then be dropped from the very
   // spec that is meant to cover every tier.
+  //
+  // Such scans read raw proto text, comments included, so do not write a
+  // sample value next to this field name in prose -- it would be picked up as
+  // a real tier.
   //
   // Empty means no restriction: the binding is always visible.
   string restriction = 2;
