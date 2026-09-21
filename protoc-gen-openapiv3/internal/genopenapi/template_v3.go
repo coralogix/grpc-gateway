@@ -791,13 +791,37 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				}
 			}
 
+			// Validate against m.Bindings, not the possibly-truncated selection
+			// below: with ignore_additional_bindings the slice holds only the
+			// main binding, and an annotation for a binding that really exists
+			// must not be reported as dangling.
+			additionalBindingOpts, err := getAdditionalBindingOptions(m)
+			if err != nil {
+				return nil, nil, err
+			}
+
 			if param.reg.IsIgnoreAdditionalBindings() && mainBinding != nil {
+				if len(additionalBindingOpts) > 0 {
+					// The annotation is silently inert in this mode -- the
+					// bindings it describes never reach the document at all.
+					// Say so, rather than let a route quietly go missing.
+					log.Printf("Warning: %s.%s declares additional_binding options, but ignore_additional_bindings is set; they have no effect", svc.GetName(), m.GetName())
+				}
 				bindings = []*descriptor.Binding{mainBinding}
 
 			} else {
 				bindings = m.Bindings
 			}
 			for _, b := range bindings {
+				// Index 0 is the main binding and is never addressed by
+				// additional_binding; entry i describes binding i+1.
+				var bindingOpts *options.AdditionalBinding
+				if b.Index > 0 && b.Index <= len(additionalBindingOpts) {
+					bindingOpts = additionalBindingOpts[b.Index-1]
+				}
+				if !isVisible(visibilityRuleFor(bindingOpts), param.reg) {
+					continue
+				}
 				tags := []string{}
 				summary := m.GetName()
 				operationID := fmt.Sprintf("%s_%s", svc.GetName(), m.GetName())
@@ -850,6 +874,12 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 						}
 					}
 				}
+				// Every binding of a method otherwise generates the same
+				// operationId, which is invalid in an OpenAPI document. Applied
+				// after the openapiv3_operation block so an explicit
+				// operation_id is still distinguished per binding.
+				operationID += additionalBindingSuffix(b, bindingOpts)
+
 				path := applyPathParamRenames(sanitizeURLPath(b.PathTmpl.Template), buildPathParamRenames(b, param.reg))
 				httpMethod := b.HTTPMethod
 
@@ -3616,6 +3646,81 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 
 func isEmptyOpenAPIV3Schema(schema *OpenAPIV3Schema) bool {
 	return schema == nil || reflect.DeepEqual(*schema, OpenAPIV3Schema{})
+}
+
+// getAdditionalBindingOptions returns the method's per-binding options, entry i
+// describing additional binding i+1 (declaration order). google.api.HttpRule
+// has no extension range, so options for an individual additional_bindings
+// entry have to be carried on the method and matched back by position.
+//
+// Declaring more entries than there are additional bindings is an error: the
+// surplus describes nothing, and the most likely cause is a binding that was
+// removed while its options were left behind.
+func getAdditionalBindingOptions(m *descriptor.Method) ([]*options.AdditionalBinding, error) {
+	if m == nil || m.Options == nil {
+		return nil, nil
+	}
+	if !proto.HasExtension(m.Options, options.E_Openapiv3Operation) {
+		return nil, nil
+	}
+	operation, ok := proto.GetExtension(m.Options, options.E_Openapiv3Operation).(*options.Operation)
+	if !ok || operation == nil {
+		return nil, nil
+	}
+	opts := operation.GetAdditionalBinding()
+	if len(opts) == 0 {
+		return nil, nil
+	}
+
+	additional := 0
+	for _, b := range m.Bindings {
+		if b.Index > 0 {
+			additional++
+		}
+	}
+	if len(opts) > additional {
+		return nil, fmt.Errorf("%s: %d additional_binding option(s) declared but the method has %d additional binding(s)", m.GetName(), len(opts), additional)
+	}
+
+	seen := make(map[string]bool, len(opts))
+	for _, o := range opts {
+		suffix := o.GetNameSuffix()
+		if suffix == "" {
+			continue
+		}
+		if seen[suffix] {
+			return nil, fmt.Errorf("%s: duplicate additional_binding name_suffix %q; operation IDs must be unique", m.GetName(), suffix)
+		}
+		seen[suffix] = true
+	}
+	return opts, nil
+}
+
+// visibilityRuleFor adapts a binding's options to the VisibilityRule shape the
+// shared isVisible helper expects, so a binding is filtered by exactly the same
+// selector logic as a service, method, field or enum value.
+func visibilityRuleFor(o *options.AdditionalBinding) *visibility.VisibilityRule {
+	if o == nil || o.GetVisibility() == "" {
+		return nil
+	}
+	return &visibility.VisibilityRule{Restriction: o.GetVisibility()}
+}
+
+// additionalBindingSuffix returns what to append to a binding's operation ID so
+// that the method's bindings stay distinct.
+//
+// An explicit name_suffix wins. Otherwise the binding falls back to its
+// one-based position, matching the openapiv2 generator: GetUser2, GetUser3.
+// The main binding keeps the bare <Service>_<Method>, so adding a binding never
+// renames an operation that already exists.
+func additionalBindingSuffix(b *descriptor.Binding, o *options.AdditionalBinding) string {
+	if b == nil || b.Index == 0 {
+		return ""
+	}
+	if suffix := o.GetNameSuffix(); suffix != "" {
+		return suffix
+	}
+	return strconv.Itoa(b.Index + 1)
 }
 
 func getFieldVisibilityOption(fd *descriptor.Field) *visibility.VisibilityRule {

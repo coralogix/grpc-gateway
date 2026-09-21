@@ -5971,3 +5971,114 @@ func TestOpenAPIV3OperationEmptySecurityMarshalsAsArray(t *testing.T) {
 		t.Errorf("want security:[]; json=%s", b)
 	}
 }
+
+// methodWithAdditionalBindings builds a method carrying `opts` as its
+// additional_binding options and `additional` additional bindings beside the
+// main one.
+func methodWithAdditionalBindings(t *testing.T, name string, additional int, opts ...*options.AdditionalBinding) *descriptor.Method {
+	t.Helper()
+	mo := &descriptorpb.MethodOptions{}
+	if len(opts) > 0 {
+		proto.SetExtension(mo, options.E_Openapiv3Operation, &options.Operation{AdditionalBinding: opts})
+	}
+	m := &descriptor.Method{
+		MethodDescriptorProto: &descriptorpb.MethodDescriptorProto{
+			Name:    proto.String(name),
+			Options: mo,
+		},
+	}
+	for i := 0; i <= additional; i++ {
+		m.Bindings = append(m.Bindings, &descriptor.Binding{Index: i})
+	}
+	return m
+}
+
+func TestAdditionalBindingSuffix(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		index int
+		opts  *options.AdditionalBinding
+		want  string
+	}{
+		{name: "main binding is never suffixed", index: 0, want: ""},
+		{name: "main binding ignores options", index: 0, opts: &options.AdditionalBinding{NameSuffix: "ForCurrentTeam"}, want: ""},
+		{name: "explicit suffix wins", index: 1, opts: &options.AdditionalBinding{NameSuffix: "ForCurrentTeam"}, want: "ForCurrentTeam"},
+		{name: "falls back to one-based position", index: 1, want: "2"},
+		{name: "empty suffix falls back too", index: 2, opts: &options.AdditionalBinding{NameSuffix: ""}, want: "3"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := additionalBindingSuffix(&descriptor.Binding{Index: tc.index}, tc.opts); got != tc.want {
+				t.Errorf("additionalBindingSuffix() = %q, want %q", got, tc.want)
+			}
+		})
+	}
+	if got := additionalBindingSuffix(nil, nil); got != "" {
+		t.Errorf("additionalBindingSuffix(nil, nil) = %q, want empty", got)
+	}
+}
+
+func TestVisibilityRuleFor(t *testing.T) {
+	if got := visibilityRuleFor(nil); got != nil {
+		t.Errorf("visibilityRuleFor(nil) = %v, want nil", got)
+	}
+	if got := visibilityRuleFor(&options.AdditionalBinding{}); got != nil {
+		t.Errorf("visibilityRuleFor(empty) = %v, want nil so the binding stays visible", got)
+	}
+	got := visibilityRuleFor(&options.AdditionalBinding{Visibility: "DEV"})
+	if got == nil || got.Restriction != "DEV" {
+		t.Errorf("visibilityRuleFor(DEV) = %v, want restriction DEV", got)
+	}
+}
+
+func TestGetAdditionalBindingOptions(t *testing.T) {
+	t.Run("no annotation", func(t *testing.T) {
+		opts, err := getAdditionalBindingOptions(methodWithAdditionalBindings(t, "GetUser", 1))
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if opts != nil {
+			t.Errorf("got %v, want nil", opts)
+		}
+	})
+
+	t.Run("one option for one additional binding", func(t *testing.T) {
+		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{NameSuffix: "ForCurrentTeam", Visibility: "DEV"})
+		opts, err := getAdditionalBindingOptions(m)
+		if err != nil {
+			t.Fatalf("unexpected error: %v", err)
+		}
+		if len(opts) != 1 || opts[0].GetNameSuffix() != "ForCurrentTeam" {
+			t.Errorf("got %v, want one entry with suffix ForCurrentTeam", opts)
+		}
+	})
+
+	t.Run("surplus options are an error", func(t *testing.T) {
+		m := methodWithAdditionalBindings(t, "GetUser", 1,
+			&options.AdditionalBinding{NameSuffix: "A"},
+			&options.AdditionalBinding{NameSuffix: "B"},
+		)
+		if _, err := getAdditionalBindingOptions(m); err == nil {
+			t.Error("want an error when more options are declared than bindings exist")
+		}
+	})
+
+	t.Run("duplicate suffixes are an error", func(t *testing.T) {
+		m := methodWithAdditionalBindings(t, "GetUser", 2,
+			&options.AdditionalBinding{NameSuffix: "Same"},
+			&options.AdditionalBinding{NameSuffix: "Same"},
+		)
+		if _, err := getAdditionalBindingOptions(m); err == nil {
+			t.Error("want an error when two bindings resolve to the same operation ID")
+		}
+	})
+
+	t.Run("repeated empty suffixes are allowed", func(t *testing.T) {
+		m := methodWithAdditionalBindings(t, "GetUser", 2,
+			&options.AdditionalBinding{Visibility: "DEV"},
+			&options.AdditionalBinding{Visibility: "DEV"},
+		)
+		if _, err := getAdditionalBindingOptions(m); err != nil {
+			t.Errorf("unexpected error: %v, empty suffixes fall back to distinct positions", err)
+		}
+	})
+}

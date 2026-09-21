@@ -179,6 +179,55 @@ message Operation {
   // See: https://swagger.io/docs/specification/2-0/describing-parameters/
   // and https://swagger.io/specification/v2/#parameter-object.
   Parameters parameters = 14;
+  // Per-binding options for the method's `additional_bindings`.
+  //
+  // `google.api.HttpRule` declares no extension range, so an individual
+  // `additional_bindings` entry cannot carry options of its own. These entries
+  // supply them from the method level instead: the Nth entry applies to the Nth
+  // additional binding, in declaration order. The main binding (index 0) is
+  // never addressed here -- use `google.api.method_visibility` and
+  // `operation_id` for it.
+  //
+  // Declaring more entries than the method has additional bindings is an error.
+  // Fewer is allowed; the remaining bindings keep the default behavior.
+  //
+  // Ignored entirely when the `ignore_additional_bindings` generator option is
+  // set, since no additional binding reaches the spec in that mode. The
+  // generator logs a warning in that case rather than failing.
+  repeated AdditionalBinding additional_binding = 15;
+}
+
+// Options for a single `additional_bindings` entry of a method.
+message AdditionalBinding {
+  // Appended to the generated operation ID for this binding.
+  //
+  // Every operation in an OpenAPI document must have a unique `operationId`,
+  // but every binding of one method otherwise generates the same one. The
+  // suffix is how a binding gets a name a human chose: with
+  // `name_suffix: "ForCurrentTeam"`, a method `GetUser` on service
+  // `UsersMgmtService` yields `UsersMgmtService_GetUserForCurrentTeam`.
+  //
+  // The generator owns the `<Service>_<Method>` prefix, so renaming the RPC
+  // carries through without touching this field.
+  //
+  // When empty, the binding falls back to its one-based position --
+  // `UsersMgmtService_GetUser2`, `..._GetUser3` -- matching the openapiv2
+  // generator. That keeps the document valid, but the name is positional and
+  // will change if the bindings are reordered. Prefer setting it explicitly for
+  // any binding that reaches a published spec.
+  //
+  // Two bindings of the same method may not resolve to the same operation ID.
+  string name_suffix = 1;
+  // Visibility restriction for this binding, using the same labels as
+  // `google.api.VisibilityRule.restriction` (for example "DEV" or "PREVIEW").
+  //
+  // The binding is omitted from the generated document unless the restriction
+  // is selected by `visibility_restriction_selectors`. This is what lets a new
+  // URL for an existing method ship hidden, while the method and its main
+  // binding stay published -- a method-level restriction would hide both.
+  //
+  // Empty means no restriction: the binding is always visible.
+  string visibility = 2;
 }
 
 // `Parameters` is a representation of OpenAPI v2 specification's parameters object.
