@@ -6150,4 +6150,28 @@ func TestAdditionalBindingOptionsFor(t *testing.T) {
 			t.Error("want an error: the entries describe the method's own additional_bindings")
 		}
 	})
+
+	// ignore_additional_bindings mode detects the annotation through this
+	// accessor, so it must never reject one -- generation there does not emit
+	// the bindings, and the run that does emit them validates instead.
+	t.Run("raw accessor does not validate", func(t *testing.T) {
+		m := methodWithAdditionalBindings(t, "GetUser", 1,
+			&options.AdditionalBinding{NameSuffix: "A"},
+			&options.AdditionalBinding{NameSuffix: "A"},
+		)
+		if got := rawAdditionalBindingOptions(m); len(got) != 2 {
+			t.Errorf("got %d entries, want 2 returned without validation", len(got))
+		}
+		if _, err := additionalBindingOptionsFor(m); err == nil {
+			t.Error("the validating path must still reject this method")
+		}
+	})
+
+	t.Run("raw accessor tolerates a missing inline http rule", func(t *testing.T) {
+		m := methodWithAdditionalBindings(t, "GetUser", 1, &options.AdditionalBinding{Visibility: "DEV"})
+		proto.ClearExtension(m.Options, httpoptions.E_Http)
+		if got := rawAdditionalBindingOptions(m); len(got) != 1 {
+			t.Errorf("got %d entries, want 1", len(got))
+		}
+	})
 }

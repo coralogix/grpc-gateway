@@ -792,25 +792,25 @@ func buildOpenAPIV3Paths(param param, resolvedNames map[string]string) (OpenAPIV
 				}
 			}
 
-			// Validate against m.Bindings, not the possibly-truncated selection
-			// below: with ignore_additional_bindings the slice holds only the
-			// main binding, and an annotation for a binding that really exists
-			// must not be reported as dangling.
-			additionalBindingOpts, err := additionalBindingOptionsFor(m)
-			if err != nil {
-				return nil, nil, err
-			}
-
+			var additionalBindingOpts map[int]*options.AdditionalBinding
 			if param.reg.IsIgnoreAdditionalBindings() && mainBinding != nil {
-				if len(additionalBindingOpts) > 0 {
-					// The annotation is silently inert in this mode -- the
-					// bindings it describes never reach the document at all.
-					// Say so, rather than let a route quietly go missing.
+				// The annotation is inert in this mode -- the bindings it
+				// describes never reach the document. Report that it has no
+				// effect, rather than let a route quietly go missing, but do
+				// not validate it: failing generation over a feature this mode
+				// has switched off would be surprising, and the run that does
+				// emit those bindings validates them.
+				if len(rawAdditionalBindingOptions(m)) > 0 {
 					log.Printf("Warning: %s.%s declares additional_binding options, but ignore_additional_bindings is set; they have no effect", svc.GetName(), m.GetName())
 				}
 				bindings = []*descriptor.Binding{mainBinding}
 
 			} else {
+				var err error
+				additionalBindingOpts, err = additionalBindingOptionsFor(m)
+				if err != nil {
+					return nil, nil, err
+				}
 				bindings = m.Bindings
 			}
 			for _, b := range bindings {
@@ -3647,6 +3647,24 @@ func isEmptyOpenAPIV3Schema(schema *OpenAPIV3Schema) bool {
 	return schema == nil || reflect.DeepEqual(*schema, OpenAPIV3Schema{})
 }
 
+// rawAdditionalBindingOptions returns a method's declared additional_binding
+// entries without checking them against its bindings. Callers that will not
+// emit those bindings -- ignore_additional_bindings mode -- use this to detect
+// the annotation without failing generation over it.
+func rawAdditionalBindingOptions(m *descriptor.Method) []*options.AdditionalBinding {
+	if m == nil || m.Options == nil {
+		return nil
+	}
+	if !proto.HasExtension(m.Options, options.E_Openapiv3Operation) {
+		return nil
+	}
+	operation, ok := proto.GetExtension(m.Options, options.E_Openapiv3Operation).(*options.Operation)
+	if !ok || operation == nil {
+		return nil
+	}
+	return operation.GetAdditionalBinding()
+}
+
 // additionalBindingOptionsFor maps a method's additional_binding entries onto
 // the bindings they actually describe, keyed by descriptor.Binding.Index.
 //
@@ -3665,17 +3683,7 @@ func isEmptyOpenAPIV3Schema(schema *OpenAPIV3Schema) bool {
 // Declaring more entries than the inline rule has additional bindings is an
 // error, as is two bindings resolving to the same operation ID.
 func additionalBindingOptionsFor(m *descriptor.Method) (map[int]*options.AdditionalBinding, error) {
-	if m == nil || m.Options == nil {
-		return nil, nil
-	}
-	if !proto.HasExtension(m.Options, options.E_Openapiv3Operation) {
-		return nil, nil
-	}
-	operation, ok := proto.GetExtension(m.Options, options.E_Openapiv3Operation).(*options.Operation)
-	if !ok || operation == nil {
-		return nil, nil
-	}
-	opts := operation.GetAdditionalBinding()
+	opts := rawAdditionalBindingOptions(m)
 	if len(opts) == 0 {
 		return nil, nil
 	}
