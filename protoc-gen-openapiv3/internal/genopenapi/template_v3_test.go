@@ -2635,6 +2635,58 @@ func TestBuildQueryParameters_NotRequiredWithoutAnnotations(t *testing.T) {
 	assertQueryParamRequired(t, params, "limit", false)
 }
 
+// TestBuildQueryParameters_MapUsesDeepObjectEncoding documents grpc-gateway map
+// query parsing (field[key]=value) for OpenAPI clients.
+func TestBuildQueryParameters_MapUsesDeepObjectEncoding(t *testing.T) {
+	t.Helper()
+	optional := descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL
+	repeated := descriptorpb.FieldDescriptorProto_LABEL_REPEATED
+	stringType := descriptorpb.FieldDescriptorProto_TYPE_STRING
+	messageType := descriptorpb.FieldDescriptorProto_TYPE_MESSAGE
+	entryTypeName := proto.String(".example.ReqMsg.GroupingKeysEntry")
+
+	entry := &descriptorpb.DescriptorProto{
+		Name: proto.String("GroupingKeysEntry"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{Name: proto.String("key"), Number: proto.Int32(1), Label: &optional, Type: &stringType},
+			{Name: proto.String("value"), Number: proto.Int32(2), Label: &optional, Type: &stringType},
+		},
+		Options: &descriptorpb.MessageOptions{MapEntry: proto.Bool(true)},
+	}
+
+	binding, reg := newQueryParamFixtureFromMessages(t, &descriptorpb.DescriptorProto{
+		Name: proto.String("ReqMsg"),
+		Field: []*descriptorpb.FieldDescriptorProto{
+			{
+				Name:     proto.String("grouping_keys"),
+				Number:   proto.Int32(1),
+				Label:    &repeated,
+				Type:     &messageType,
+				TypeName: entryTypeName,
+			},
+		},
+		NestedType: []*descriptorpb.DescriptorProto{entry},
+	})
+
+	params := buildQueryParameters(binding, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+	var mapParam *OpenAPIV3Parameter
+	for i := range params {
+		if params[i].Name == "grouping_keys" {
+			mapParam = params[i].OpenAPIV3Parameter
+			break
+		}
+	}
+	if mapParam == nil {
+		t.Fatal("expected grouping_keys query parameter")
+	}
+	if mapParam.Style != "deepObject" {
+		t.Fatalf("style = %q, want deepObject", mapParam.Style)
+	}
+	if mapParam.Explode == nil || !*mapParam.Explode {
+		t.Fatalf("explode = %v, want true", mapParam.Explode)
+	}
+}
+
 // --- Fix 1: repeated-field array metadata ---
 
 // TestRepeatedField_NonReferences_DescriptionMinMaxOnArraySchema exercises

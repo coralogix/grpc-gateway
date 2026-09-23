@@ -1591,6 +1591,30 @@ func buildPathParameters(binding *descriptor.Binding, registry *descriptor.Regis
 	return parameterRefs
 }
 
+func isMapField(field *descriptor.Field, registry *descriptor.Registry) bool {
+	if field.TypeName == nil {
+		return false
+	}
+	fieldMessage, err := registry.LookupMsg(*field.TypeName, *field.TypeName)
+	if err != nil || fieldMessage == nil {
+		return false
+	}
+	opts := fieldMessage.GetOptions()
+	return opts != nil && opts.MapEntry != nil && *opts.MapEntry
+}
+
+// applyMapQueryParameterEncoding sets OpenAPI query serialization for protobuf
+// map fields. grpc-gateway expects bracket keys (grouping_keys[label]=value);
+// deepObject + explode matches that wire format for generated clients.
+func applyMapQueryParameterEncoding(param *OpenAPIV3Parameter, field *descriptor.Field, registry *descriptor.Registry) {
+	if param == nil || !isMapField(field, registry) {
+		return
+	}
+	param.Style = "deepObject"
+	explode := true
+	param.Explode = &explode
+}
+
 func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) []OpenAPIV3ParameterRef {
 	if binding.Body != nil && len(binding.Body.FieldPath) == 0 {
 		return []OpenAPIV3ParameterRef{}
@@ -1660,6 +1684,7 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 					Schema:      queryParameterSchema,
 				},
 			}
+			applyMapQueryParameterEncoding(parameterRef.OpenAPIV3Parameter, field, registry)
 			parameterRefs = append(parameterRefs, parameterRef)
 			continue
 		}
@@ -1700,6 +1725,7 @@ func buildQueryParameters(binding *descriptor.Binding, schemaMap map[string]*Ope
 				Schema:      queryParameterSchema,
 			},
 		}
+		applyMapQueryParameterEncoding(parameterRef.OpenAPIV3Parameter, field, registry)
 		parameterRefs = append(parameterRefs, parameterRef)
 	}
 	// Required parameters must precede optional ones. Path parameters are always
