@@ -7,9 +7,11 @@ import (
 	"maps"
 	"mime"
 	"reflect"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"slices"
 
@@ -2668,12 +2670,12 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 		// (title/description/readOnly/deprecated/extensions) goes on the array,
 		// not on message/enum item $refs.
 		applyOpenAPIV3FieldAnnotationsToArray(schema, field)
-		return &OpenAPIV3SchemaRef{
+		return applyFieldDefault(&OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
-		}
+		}, field, registry)
 	}
 	propertySchema, _ := buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames)
-	return propertySchema
+	return applyFieldDefault(propertySchema, field, registry)
 }
 
 func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, registry *descriptor.Registry, resolvedNames map[string]string) (*OpenAPIV3SchemaRef, RawExample) {
@@ -3190,12 +3192,12 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 		// (title/description/readOnly/deprecated/extensions) goes on the array,
 		// not on message/enum item $refs.
 		applyOpenAPIV3FieldAnnotationsToArray(schema, field)
-		return &OpenAPIV3SchemaRef{
+		return applyFieldDefault(&OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
-		}
+		}, field, registry)
 	}
 	propertySchema, _ := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry)
-	return propertySchema
+	return applyFieldDefault(propertySchema, field, registry)
 }
 func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) (*OpenAPIV3SchemaRef, RawExample) {
 	var title string
@@ -3719,4 +3721,246 @@ func getFieldOpenAPIOption(reg *descriptor.Registry, fd *descriptor.Field) (*opt
 		return nil, nil
 	}
 	return opts, nil
+}
+
+// fieldDefaultAnnotation returns the field's openapiv3_field default, or "".
+func fieldDefaultAnnotation(field *descriptor.Field) string {
+	if field == nil || field.Options == nil || !proto.HasExtension(field.Options, options.E_Openapiv3Field) {
+		return ""
+	}
+	ext, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema)
+	if !ok || ext == nil {
+		return ""
+	}
+	return ext.GetDefault()
+}
+
+// applyFieldDefault emits the field's openapiv3_field default on its property
+// schema, coerced to the schema's JSON type. A default that does not fit the
+// schema (wrong type, unknown enum value, out of its own bounds) is dropped
+// with a warning: spectral validates default against the schema, and a wrong
+// default is a false contract for SDK and Terraform generators.
+func applyFieldDefault(schema *OpenAPIV3SchemaRef, field *descriptor.Field, registry *descriptor.Registry) *OpenAPIV3SchemaRef {
+	raw := fieldDefaultAnnotation(field)
+	if raw == "" || schema == nil {
+		return schema
+	}
+	var value RawExample
+	var err error
+	if schema.OpenAPIV3Schema != nil && schema.Type == "array" {
+		value, err = coerceArrayDefault(raw, schema.OpenAPIV3Schema, field, registry)
+	} else {
+		value, err = coerceDefaultValue(raw, schema, field, registry)
+	}
+	if err != nil {
+		log.Printf("Warning: dropping default %q on field %s: %v", raw, field.GetName(), err)
+		return schema
+	}
+	if schema.Ref != "" {
+		return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+			AllOf:   []*OpenAPIV3SchemaRef{{Ref: schema.Ref}},
+			Default: value,
+		}}
+	}
+	if schema.OpenAPIV3Schema == nil {
+		return schema
+	}
+	// Copy before setting: an inline message schema is shared with schemaMap.
+	schemaCopy := *schema.OpenAPIV3Schema
+	schemaCopy.Default = value
+	return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &schemaCopy}
+}
+
+func coerceArrayDefault(raw string, schema *OpenAPIV3Schema, field *descriptor.Field, registry *descriptor.Registry) (RawExample, error) {
+	var elements []json.RawMessage
+	if err := json.Unmarshal([]byte(strings.TrimSpace(raw)), &elements); err != nil {
+		return nil, fmt.Errorf("array default must be a JSON array: %w", err)
+	}
+	if elements == nil {
+		return nil, fmt.Errorf("array default must be a JSON array, got null")
+	}
+	if schema.MinItems != nil && uint64(len(elements)) < *schema.MinItems {
+		return nil, fmt.Errorf("has %d items, below minItems %d", len(elements), *schema.MinItems)
+	}
+	if schema.MaxItems != 0 && uint64(len(elements)) > schema.MaxItems {
+		return nil, fmt.Errorf("has %d items, above maxItems %d", len(elements), schema.MaxItems)
+	}
+	out := make([]string, len(elements))
+	for i, el := range elements {
+		coerced, err := coerceDefaultValue(string(el), schema.Items, field, registry)
+		if err != nil {
+			return nil, fmt.Errorf("item %d: %w", i, err)
+		}
+		out[i] = string(coerced)
+	}
+	if schema.UniqueItems && len(out) != len(slices.Compact(slices.Sorted(slices.Values(out)))) {
+		return nil, fmt.Errorf("has duplicate items but uniqueItems is set")
+	}
+	return RawExample("[" + strings.Join(out, ",") + "]"), nil
+}
+
+// coerceDefaultValue coerces one (non-array) default to the JSON shape of s.
+// Scalars accept the same loose spellings as examples ("0", "\"0\"", "true").
+func coerceDefaultValue(raw string, s *OpenAPIV3SchemaRef, field *descriptor.Field, registry *descriptor.Registry) (RawExample, error) {
+	clean := strings.TrimSpace(raw)
+	if field.GetType() == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
+		return coerceEnumDefault(clean, field, registry)
+	}
+	if s == nil {
+		return nil, fmt.Errorf("no schema to validate against")
+	}
+	// A bare message $ref, or the allOf wrapper that carries annotations beside one.
+	if s.Ref != "" || (s.OpenAPIV3Schema != nil && s.Type == "" && len(s.AllOf) == 1 && s.AllOf[0].Ref != "") {
+		return coerceObjectDefault(clean)
+	}
+	if s.OpenAPIV3Schema == nil {
+		return nil, fmt.Errorf("no schema to validate against")
+	}
+	isComposite := strings.HasPrefix(clean, "[") || strings.HasPrefix(clean, "{")
+	switch s.Type {
+	case "object":
+		return coerceObjectDefault(clean)
+	case "boolean":
+		if isComposite {
+			return nil, fmt.Errorf("not a boolean")
+		}
+		v, err := validateAndCoerceJsonExample(clean, "boolean")
+		if err != nil {
+			return nil, err
+		}
+		return RawExample(v), nil
+	case "integer", "number":
+		if isComposite {
+			return nil, fmt.Errorf("not a number")
+		}
+		v, err := validateAndCoerceJsonExample(clean, s.Type)
+		if err != nil {
+			return nil, err
+		}
+		n, _ := strconv.ParseFloat(v, 64)
+		if err := checkNumericBounds(n, s.OpenAPIV3Schema); err != nil {
+			return nil, err
+		}
+		return RawExample(v), nil
+	case "string":
+		if signed, ok := stringInt64Kind(field); ok {
+			if isComposite {
+				return nil, fmt.Errorf("not a 64-bit integer")
+			}
+			v, err := stringIntExample(clean, signed)
+			if err != nil {
+				return nil, err
+			}
+			return RawExample(v), nil
+		}
+		str := raw
+		var unquoted string
+		if len(clean) >= 2 && strings.HasPrefix(clean, "\"") && strings.HasSuffix(clean, "\"") && json.Unmarshal([]byte(clean), &unquoted) == nil {
+			str = unquoted
+		}
+		if err := checkStringConstraints(str, s.OpenAPIV3Schema); err != nil {
+			return nil, err
+		}
+		b, err := json.Marshal(str)
+		if err != nil {
+			return nil, err
+		}
+		return RawExample(b), nil
+	case "":
+		// Untyped well-known types (Struct, Value, Any, ...): any valid JSON.
+		if !json.Valid([]byte(clean)) {
+			return nil, fmt.Errorf("not valid JSON")
+		}
+		return RawExample(clean), nil
+	}
+	return nil, fmt.Errorf("unsupported schema type %q", s.Type)
+}
+
+func coerceObjectDefault(clean string) (RawExample, error) {
+	var obj map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(clean), &obj); err != nil || obj == nil {
+		return nil, fmt.Errorf("message/map default must be a JSON object")
+	}
+	return RawExample(clean), nil
+}
+
+// coerceEnumDefault accepts a visible value name of the field's enum, quoted or
+// not. Numeric values are rejected: the JSON wire form is the value name.
+func coerceEnumDefault(clean string, field *descriptor.Field, registry *descriptor.Registry) (RawExample, error) {
+	name := stripQuotes(clean)
+	enum, err := registry.LookupEnum("", field.GetTypeName())
+	if err != nil {
+		return nil, fmt.Errorf("could not look up enum %s: %w", field.GetTypeName(), err)
+	}
+	for _, v := range enum.GetValue() {
+		if v.GetName() != name {
+			continue
+		}
+		if !isVisible(getEnumValueVisibilityOption(v), registry) {
+			return nil, fmt.Errorf("enum value %s is not visible in this spec", name)
+		}
+		b, err := json.Marshal(name)
+		if err != nil {
+			return nil, err
+		}
+		return RawExample(b), nil
+	}
+	return nil, fmt.Errorf("%q is not a value of enum %s", name, field.GetTypeName())
+}
+
+// stringInt64Kind reports whether the field is a 64-bit integer rendered as a
+// JSON string (proto3 int64/uint64 families and their wrappers).
+func stringInt64Kind(field *descriptor.Field) (signed bool, ok bool) {
+	switch field.GetType() {
+	case descriptorpb.FieldDescriptorProto_TYPE_INT64,
+		descriptorpb.FieldDescriptorProto_TYPE_SINT64,
+		descriptorpb.FieldDescriptorProto_TYPE_SFIXED64:
+		return true, true
+	case descriptorpb.FieldDescriptorProto_TYPE_UINT64,
+		descriptorpb.FieldDescriptorProto_TYPE_FIXED64:
+		return false, true
+	}
+	switch field.GetTypeName() {
+	case ".google.protobuf.Int64Value":
+		return true, true
+	case ".google.protobuf.UInt64Value":
+		return false, true
+	}
+	return false, false
+}
+
+func checkNumericBounds(n float64, s *OpenAPIV3Schema) error {
+	if s.Minimum != nil && n < *s.Minimum {
+		return fmt.Errorf("%v is below minimum %v", n, *s.Minimum)
+	}
+	if s.ExclusiveMinimum != nil && n <= *s.ExclusiveMinimum {
+		return fmt.Errorf("%v is not above exclusiveMinimum %v", n, *s.ExclusiveMinimum)
+	}
+	if s.Maximum != nil && n > *s.Maximum {
+		return fmt.Errorf("%v is above maximum %v", n, *s.Maximum)
+	}
+	if s.ExclusiveMaximum != nil && n >= *s.ExclusiveMaximum {
+		return fmt.Errorf("%v is not below exclusiveMaximum %v", n, *s.ExclusiveMaximum)
+	}
+	return nil
+}
+
+func checkStringConstraints(str string, s *OpenAPIV3Schema) error {
+	length := uint64(utf8.RuneCountInString(str))
+	if s.MinLength != nil && length < *s.MinLength {
+		return fmt.Errorf("length %d is below minLength %d", length, *s.MinLength)
+	}
+	if s.MaxLength != 0 && length > s.MaxLength {
+		return fmt.Errorf("length %d is above maxLength %d", length, s.MaxLength)
+	}
+	if len(s.Enum) > 0 && !slices.Contains(s.Enum, str) {
+		return fmt.Errorf("%q is not one of %v", str, s.Enum)
+	}
+	// ECMA-262 patterns Go's RE2 cannot compile are skipped, not treated as failures.
+	if s.Pattern != "" {
+		if re, err := regexp.Compile(s.Pattern); err == nil && !re.MatchString(str) {
+			return fmt.Errorf("%q does not match pattern %s", str, s.Pattern)
+		}
+	}
+	return nil
 }

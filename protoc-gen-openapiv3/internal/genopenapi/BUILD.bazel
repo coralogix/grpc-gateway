@@ -36,6 +36,7 @@ go_test(
     name = "genopenapi_test",
     size = "small",
     srcs = [
+        "field_default_test.go",
         "format_test.go",
         "helpers_test.go",
         "naming_test.go",
