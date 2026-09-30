@@ -16,19 +16,21 @@ import (
 
 type param struct {
 	*descriptor.File
-	Imports            []descriptor.GoPackage
-	UseRequestContext  bool
-	RegisterFuncSuffix string
-	AllowPatchFeature  bool
-	OmitPackageDoc     bool
-	UseOpaqueAPI       bool
+	Imports                   []descriptor.GoPackage
+	UseRequestContext         bool
+	RegisterFuncSuffix        string
+	AllowPatchFeature         bool
+	FieldMaskJSONNamesInQuery bool
+	OmitPackageDoc            bool
+	UseOpaqueAPI              bool
 }
 
 type binding struct {
 	*descriptor.Binding
-	Registry          *descriptor.Registry
-	AllowPatchFeature bool
-	UseOpaqueAPI      bool
+	Registry                  *descriptor.Registry
+	AllowPatchFeature         bool
+	FieldMaskJSONNamesInQuery bool
+	UseOpaqueAPI              bool
 }
 
 // GetBodyFieldPath returns the binding body's field path.
@@ -182,20 +184,22 @@ func applyTemplate(p param, reg *descriptor.Registry) (string, error) {
 
 				methodWithBindingsSeen = true
 				if err := handlerTemplate.Execute(w, binding{
-					Binding:           b,
-					Registry:          reg,
-					AllowPatchFeature: p.AllowPatchFeature,
-					UseOpaqueAPI:      p.UseOpaqueAPI,
+					Binding:                   b,
+					Registry:                  reg,
+					AllowPatchFeature:         p.AllowPatchFeature,
+					FieldMaskJSONNamesInQuery: p.FieldMaskJSONNamesInQuery,
+					UseOpaqueAPI:              p.UseOpaqueAPI,
 				}); err != nil {
 					return "", err
 				}
 
 				// Local
 				if err := localHandlerTemplate.Execute(w, binding{
-					Binding:           b,
-					Registry:          reg,
-					AllowPatchFeature: p.AllowPatchFeature,
-					UseOpaqueAPI:      p.UseOpaqueAPI,
+					Binding:                   b,
+					Registry:                  reg,
+					AllowPatchFeature:         p.AllowPatchFeature,
+					FieldMaskJSONNamesInQuery: p.FieldMaskJSONNamesInQuery,
+					UseOpaqueAPI:              p.UseOpaqueAPI,
 				}); err != nil {
 					return "", err
 				}
@@ -498,9 +502,15 @@ var filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }} = {{
 	if err := req.ParseForm(); err != nil {
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	{{- if and .FieldMaskJSONNamesInQuery .AllowPatchFeature (eq (.HTTPMethod) "PATCH") (.FieldMaskField) (not (eq "*" .GetBodyFieldPath)) }}
+	if err := runtime.PopulateQueryParametersWithFieldMask(&protoReq, req.Form, filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }}, {{ .GetBodyFieldPath | printf "%q" }}); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	{{- else }}
 	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }}); err != nil {
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	{{- end }}
 {{- end }}
 {{- if .Method.GetServerStreaming }}
 	stream, err := client.{{ .Method.GetName }}(ctx, &protoReq)
@@ -725,9 +735,15 @@ func local_request_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index
 	if err := req.ParseForm(); err != nil {
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	{{- if and .FieldMaskJSONNamesInQuery .AllowPatchFeature (eq (.HTTPMethod) "PATCH") (.FieldMaskField) (not (eq "*" .GetBodyFieldPath)) }}
+	if err := runtime.PopulateQueryParametersWithFieldMask(&protoReq, req.Form, filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }}, {{ .GetBodyFieldPath | printf "%q" }}); err != nil {
+		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
+	}
+	{{- else }}
 	if err := runtime.PopulateQueryParameters(&protoReq, req.Form, filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }}); err != nil {
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
+	{{- end }}
 {{- end}}
 {{- if .Method.GetServerStreaming }}
 	// TODO

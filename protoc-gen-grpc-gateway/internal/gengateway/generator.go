@@ -16,18 +16,19 @@ import (
 var errNoTargetService = errors.New("no target service defined in the file")
 
 type generator struct {
-	reg                *descriptor.Registry
-	baseImports        []descriptor.GoPackage
-	useRequestContext  bool
-	registerFuncSuffix string
-	allowPatchFeature  bool
-	standalone         bool
-	useOpaqueAPI       bool
+	reg                       *descriptor.Registry
+	baseImports               []descriptor.GoPackage
+	useRequestContext         bool
+	registerFuncSuffix        string
+	allowPatchFeature         bool
+	fieldMaskJSONNamesInQuery bool
+	standalone                bool
+	useOpaqueAPI              bool
 }
 
 // New returns a new generator which generates grpc gateway files.
 func New(reg *descriptor.Registry, useRequestContext bool, registerFuncSuffix string,
-	allowPatchFeature, standalone bool, useOpaqueAPI bool) gen.Generator {
+	allowPatchFeature, fieldMaskJSONNamesInQuery, standalone bool, useOpaqueAPI bool) gen.Generator {
 	var imports []descriptor.GoPackage
 	for _, pkgpath := range []string{
 		"context",
@@ -61,13 +62,14 @@ func New(reg *descriptor.Registry, useRequestContext bool, registerFuncSuffix st
 	}
 
 	return &generator{
-		reg:                reg,
-		baseImports:        imports,
-		useRequestContext:  useRequestContext,
-		registerFuncSuffix: registerFuncSuffix,
-		allowPatchFeature:  allowPatchFeature,
-		standalone:         standalone,
-		useOpaqueAPI:       useOpaqueAPI,
+		reg:                       reg,
+		baseImports:               imports,
+		useRequestContext:         useRequestContext,
+		registerFuncSuffix:        registerFuncSuffix,
+		allowPatchFeature:         allowPatchFeature,
+		fieldMaskJSONNamesInQuery: fieldMaskJSONNamesInQuery,
+		standalone:                standalone,
+		useOpaqueAPI:              useOpaqueAPI,
 	}
 }
 
@@ -129,12 +131,13 @@ func (g *generator) generate(file *descriptor.File) (string, error) {
 		}
 	}
 	params := param{
-		File:               file,
-		Imports:            imports,
-		UseRequestContext:  g.useRequestContext,
-		RegisterFuncSuffix: g.registerFuncSuffix,
-		AllowPatchFeature:  g.allowPatchFeature,
-		UseOpaqueAPI:       g.useOpaqueAPI,
+		File:                      file,
+		Imports:                   imports,
+		UseRequestContext:         g.useRequestContext,
+		RegisterFuncSuffix:        g.registerFuncSuffix,
+		AllowPatchFeature:         g.allowPatchFeature,
+		FieldMaskJSONNamesInQuery: g.fieldMaskJSONNamesInQuery,
+		UseOpaqueAPI:              g.useOpaqueAPI,
 	}
 	if g.reg != nil {
 		params.OmitPackageDoc = g.reg.GetOmitPackageDoc()
