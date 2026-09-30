@@ -20,6 +20,8 @@ There are two scenarios:
   - Note: The same option is supported by the `protoc-gen-openapiv2` plugin.
 - The FieldMask is exposed to the REST request (as in the second additional binding in the [UpdateV2](https://github.com/grpc-ecosystem/grpc-gateway/blob/370d869f65d1ffb3d07187fb0db238eca2371ce3/examples/internal/proto/examplepb/a_bit_of_everything.proto#L432-L435) example). For this case, the field mask is left untouched by the gateway.
 
+Set the `fieldmask_json_names_in_query=true` plugin option to accept JSON field names in a FieldMask query parameter for the hidden FieldMask case. The gateway converts each JSON path to the exact protobuf field path. It also accepts existing protobuf field paths. The option is disabled by default.
+
 ## Example Usage
 
 1. Create a PATCH request.

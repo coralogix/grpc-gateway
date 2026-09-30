@@ -700,6 +700,43 @@ func TestAllowPatchFeature(t *testing.T) {
 		if want := `mux.Handle(http.MethodPatch,`; !strings.Contains(got, want) {
 			t.Errorf("applyTemplate(%#v) = %s; want to contain %s", file, got, want)
 		}
+		if strings.Contains(got, "PopulateQueryParametersWithFieldMask") {
+			t.Errorf("applyTemplate(%#v) enabled FieldMask JSON query conversion by default", file)
+		}
+	}
+
+	got, err := applyTemplate(param{
+		File:                      crossLinkFixture(&file),
+		RegisterFuncSuffix:        "Handler",
+		AllowPatchFeature:         true,
+		FieldMaskJSONNamesInQuery: true,
+	}, descriptor.NewRegistry())
+	if err != nil {
+		t.Fatalf("applyTemplate(%#v) failed with %v; want success", file, err)
+	}
+	wantQueryParser := `runtime.PopulateQueryParametersWithFieldMask(&protoReq, req.Form, filter_ExampleService_Example_0, "abe")`
+	if gotCount := strings.Count(got, wantQueryParser); gotCount != 2 {
+		t.Errorf("generated client and local handlers contain %d FieldMask query parsers; want 2\n%s", gotCount, got)
+	}
+	if strings.Contains(got, "runtime.PopulateQueryParameters(&protoReq") {
+		t.Errorf("generated PATCH handlers contain the legacy query parser when FieldMask JSON query conversion is enabled\n%s", got)
+	}
+
+	file.Services[0].Methods[0].Bindings[0].HTTPMethod = "PUT"
+	got, err = applyTemplate(param{
+		File:                      crossLinkFixture(&file),
+		RegisterFuncSuffix:        "Handler",
+		AllowPatchFeature:         true,
+		FieldMaskJSONNamesInQuery: true,
+	}, descriptor.NewRegistry())
+	if err != nil {
+		t.Fatalf("applyTemplate(%#v) failed with %v; want success", file, err)
+	}
+	if strings.Contains(got, "PopulateQueryParametersWithFieldMask") {
+		t.Errorf("generated PUT handlers use the PATCH-only FieldMask query parser\n%s", got)
+	}
+	if gotCount := strings.Count(got, "runtime.PopulateQueryParameters(&protoReq"); gotCount != 2 {
+		t.Errorf("generated PUT client and local handlers contain %d legacy query parsers; want 2\n%s", gotCount, got)
 	}
 }
 
