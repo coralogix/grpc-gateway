@@ -4,6 +4,7 @@ package com.coralogixapis.thing.v1;
 
 import "google/protobuf/timestamp.proto";
 import "google/protobuf/wrappers.proto";
+import "google/api/field_behavior.proto";
 import "google/api/visibility.proto";
 import "protoc-gen-openapiv3/options/annotations.proto";
 
@@ -37,6 +38,39 @@ message Thing {
     PolymorphicVariantA variant_a = 8;
     PolymorphicVariantB variant_b = 9;
   }
+  ThingSettings settings = 10;
+}
+
+// ThingSettings shows the proto facts that the generator copies to OpenAPI.
+message ThingSettings {
+  // An optional scalar tracks presence. A bool default is a boolean.
+  optional bool enabled = 1 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "true"}];
+  // An optional enum tracks presence. The keys go next to the $ref.
+  optional ThingType tier = 2 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "THING_TYPE_STANDARD"}];
+  // An annotated optional enum keeps its allOf wrapper.
+  optional ThingType previous_tier = 3 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {description: "The previous tier."}];
+  // An int64 is a JSON string, so its default stays text.
+  int64 max_size = 4 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "100"}];
+  // A double default is a number.
+  double ratio = 5 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "0.5"}];
+  // A default that does not convert is copied as text.
+  int32 retries = 6 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "many"}];
+  // An unordered list is a set. An array default is an array.
+  repeated string labels = 7 [
+    (google.api.field_behavior) = UNORDERED_LIST,
+    (grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "[]"}
+  ];
+  repeated ThingType types = 8 [(google.api.field_behavior) = UNORDERED_LIST];
+  // The server sets these fields.
+  string revision = 9 [(google.api.field_behavior) = OUTPUT_ONLY];
+  google.protobuf.Timestamp update_time = 10 [(google.api.field_behavior) = OUTPUT_ONLY];
+  NestedStruct owner_details = 11 [(google.api.field_behavior) = OUTPUT_ONLY];
+  map<string, string> tags = 12 [(google.api.field_behavior) = OUTPUT_ONLY];
+  // REQUIRED does not add a required entry: json_schema.required is the source.
+  string owner = 13 [(google.api.field_behavior) = REQUIRED];
+  // UNORDERED_LIST is ignored on a scalar and on a map.
+  string note = 14 [(google.api.field_behavior) = UNORDERED_LIST];
+  map<string, string> attributes = 15 [(google.api.field_behavior) = UNORDERED_LIST];
 }
 
 message NestedStruct { 

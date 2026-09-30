@@ -21,6 +21,7 @@ go_library(
         "//internal/generator",
         "//protoc-gen-openapiv3/options",
         "@in_yaml_go_yaml_v3//:yaml",
+        "@org_golang_google_genproto_googleapis_api//annotations",
         "@org_golang_google_genproto_googleapis_api//visibility",
         "@org_golang_google_genproto_googleapis_rpc//status",
         "@org_golang_google_grpc//grpclog",
@@ -36,6 +37,7 @@ go_test(
     name = "genopenapi_test",
     size = "small",
     srcs = [
+        "field_facts_test.go",
         "format_test.go",
         "helpers_test.go",
         "naming_test.go",

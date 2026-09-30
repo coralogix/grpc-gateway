@@ -388,6 +388,16 @@
               "minLength": 0,
               "type": "string"
             }
+          },
+          {
+            "in": "query",
+            "name": "include_archived",
+            "required": false,
+            "schema": {
+              "default": false,
+              "type": "boolean",
+              "x-coralogix-presence": true
+            }
           }
         ],
         "responses": {
@@ -507,6 +517,9 @@
                   "previewField": {
                     "minLength": 0,
                     "type": "string"
+                  },
+                  "settings": {
+                    "$ref": "#/components/schemas/ThingSettings"
                   },
                   "thingType": {
                     "allOf": [
@@ -664,6 +677,19 @@
         ],
         "type": "string"
       },
+      "AttributesEntry": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "minLength": 0,
+            "type": "string"
+          },
+          "value": {
+            "minLength": 0,
+            "type": "string"
+          }
+        }
+      },
       "CreateThingRequest": {
         "type": "object",
         "oneOf": [
@@ -812,6 +838,11 @@
             "minLength": 0,
             "type": "string"
           },
+          "includeArchived": {
+            "default": false,
+            "type": "boolean",
+            "x-coralogix-presence": true
+          },
           "pageSize": {
             "type": "integer",
             "format": "int32"
@@ -831,7 +862,8 @@
         "properties": {
           "nextPageToken": {
             "minLength": 0,
-            "type": "string"
+            "type": "string",
+            "x-coralogix-presence": true
           },
           "things": {
             "minItems": 0,
@@ -917,6 +949,19 @@
           }
         }
       },
+      "TagsEntry": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "minLength": 0,
+            "type": "string"
+          },
+          "value": {
+            "minLength": 0,
+            "type": "string"
+          }
+        }
+      },
       "Thing": {
         "type": "object",
         "oneOf": [
@@ -982,6 +1027,9 @@
             "minLength": 0,
             "type": "string"
           },
+          "settings": {
+            "$ref": "#/components/schemas/ThingSettings"
+          },
           "thingType": {
             "allOf": [
               {
@@ -1008,6 +1056,105 @@
         },
         "externalDocs": {
           "url": ""
+        }
+      },
+      "ThingSettings": {
+        "type": "object",
+        "properties": {
+          "attributes": {
+            "type": "object",
+            "additionalProperties": {
+              "minLength": 0,
+              "type": "string"
+            }
+          },
+          "enabled": {
+            "default": true,
+            "type": "boolean",
+            "x-coralogix-presence": true
+          },
+          "labels": {
+            "default": [],
+            "items": {
+              "minLength": 0,
+              "type": "string"
+            },
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-coralogix-collection": "set"
+          },
+          "maxSize": {
+            "maxLength": 20,
+            "minLength": 1,
+            "pattern": "^-?[0-9]+$",
+            "type": "string",
+            "default": "100"
+          },
+          "note": {
+            "minLength": 0,
+            "type": "string"
+          },
+          "owner": {
+            "minLength": 0,
+            "type": "string"
+          },
+          "ownerDetails": {
+            "$ref": "#/components/schemas/NestedStruct",
+            "readOnly": true
+          },
+          "previousTier": {
+            "allOf": [
+              {
+                "$ref": "#/components/schemas/ThingType"
+              }
+            ],
+            "description": "The previous tier.",
+            "x-coralogix-presence": true
+          },
+          "ratio": {
+            "type": "number",
+            "format": "double",
+            "default": 0.5
+          },
+          "retries": {
+            "type": "integer",
+            "format": "int32",
+            "default": "many"
+          },
+          "revision": {
+            "minLength": 0,
+            "type": "string",
+            "readOnly": true
+          },
+          "tags": {
+            "type": "object",
+            "additionalProperties": {
+              "minLength": 0,
+              "type": "string"
+            },
+            "readOnly": true
+          },
+          "tier": {
+            "$ref": "#/components/schemas/ThingType",
+            "default": "THING_TYPE_STANDARD",
+            "x-coralogix-presence": true
+          },
+          "types": {
+            "items": {
+              "$ref": "#/components/schemas/ThingType"
+            },
+            "minItems": 0,
+            "type": "array",
+            "uniqueItems": true,
+            "x-coralogix-collection": "set"
+          },
+          "updateTime": {
+            "minLength": 0,
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          }
         }
       },
       "ThingType": {

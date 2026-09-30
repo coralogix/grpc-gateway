@@ -199,6 +199,9 @@ message ListThingsRequest {
 
   // The page token.
   string page_token = 4;
+
+  // Include archived things. A query parameter gets the default too.
+  optional bool include_archived = 5 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "false"}];
 }
 
 // ListThingsResponse is the response for the ListThings RPC.
