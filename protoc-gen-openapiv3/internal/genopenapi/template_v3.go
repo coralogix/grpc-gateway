@@ -1997,6 +1997,7 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 			Type:                "object",
 			Properties:          bodyProperties,
 			Required:            filterRequired(bodyRepresentation.requiredFields, bodyProperties),
+			RequiredDeclared:    bodyRepresentation.requiredDeclared,
 			Title:               bodyRepresentation.title,
 			Description:         bodyRepresentation.description,
 			OpenAPIV3Extensions: bodyRepresentation.extensions,
@@ -2031,6 +2032,7 @@ type openAPIV3BodyRepresentation struct {
 	fieldCombinations map[string][]protoField
 	oneofGroups       map[string][]*descriptor.Field
 	requiredFields    []string
+	requiredDeclared  bool
 	prefix            []string
 	title             string
 	description       string
@@ -2120,12 +2122,26 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		fieldCombinations: map[string][]protoField{*fieldMessage.Name: bodyFields},
 		oneofGroups:       oneofGroups,
 		requiredFields:    requiredFields,
+		requiredDeclared:  messageDeclaresRequired(fieldMessage),
 		prefix:            prefix,
 		title:             title,
 		description:       description,
 		extensions:        extensions,
 		externaDocs:       externalDocs,
 	}
+}
+
+// messageDeclaresRequired reports whether the message has an openapiv3_schema
+// with a json_schema. json_schema.required is a repeated field, which has no
+// presence: "required: []" and no required line reach the plugin as the same
+// bytes. The json_schema message does have presence, so it is the only signal
+// that the author considered which fields are required.
+func messageDeclaresRequired(message *descriptor.Message) bool {
+	if !proto.HasExtension(message.Options, options.E_Openapiv3Schema) {
+		return false
+	}
+	schemaExtension, ok := proto.GetExtension(message.Options, options.E_Openapiv3Schema).(*options.Schema)
+	return ok && schemaExtension.GetJsonSchema() != nil
 }
 
 func filterRequired(required []string, bodyProperties map[string]*OpenAPIV3SchemaRef) []string {
@@ -2534,6 +2550,7 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 	visibleGroups := visibleOneOfGroups(oneofGroups, registry)
 	allSchemaFields := append(slices.Clone(fieldsNotPartOfOneofGroup), flattenOneOfGroups(visibleGroups)...)
 	schema := buildSchemaFromFieldsWithReferences(allSchemaFields, registry, requiredFields, title, description, externalDocs, extensions, resolvedNames)
+	schema.RequiredDeclared = messageDeclaresRequired(message)
 	applyIndependentOneOfGroupConstraints(schema, visibleGroups, requiredFields, nil)
 	schema.Discriminator = sanitizeIndependentOneOfDiscriminator(discriminator, resolvedNames[message.FQMN()], oneofGroups, resolvedNames)
 	return schema
@@ -2588,6 +2605,7 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 	visibleGroups := visibleOneOfGroups(oneofGroups, registry)
 	allSchemaFields := append(slices.Clone(fieldsNotPartOfOneofGroup), flattenOneOfGroups(visibleGroups)...)
 	schema := buildSchemaFromFields(allSchemaFields, schemaMap, requiredFields, title, description, externalDocs, extensions, resolvedNames, registry)
+	schema.RequiredDeclared = messageDeclaresRequired(message)
 	applyIndependentOneOfGroupConstraints(schema, visibleGroups, requiredFields, nil)
 	schema.Discriminator = sanitizeIndependentOneOfDiscriminator(discriminator, resolvedNames[message.FQMN()], oneofGroups, resolvedNames)
 	return schema, map[string]*OpenAPIV3SchemaRef{}

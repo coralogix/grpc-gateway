@@ -273,6 +273,7 @@ type OpenAPIV3Schema struct {
 	MaxProperties        uint64                         `json:"maxProperties,omitempty" yaml:"maxProperties,omitempty"`
 	MinProperties        uint64                         `json:"minProperties,omitempty" yaml:"minProperties,omitempty"`
 	Required             []string                       `json:"required,omitempty" yaml:"required,omitempty"`
+	RequiredDeclared     bool                           `json:"-" yaml:"-"` // author declared requiredness; see declaresEmptyRequired
 	Enum                 []string                       `json:"enum,omitempty" yaml:"enum,omitempty"`
 	Type                 string                         `json:"type,omitempty" yaml:"type,omitempty"`
 	AllOf                []*OpenAPIV3SchemaRef          `json:"allOf,omitempty" yaml:"allOf,omitempty"`
@@ -336,7 +337,16 @@ func (s *OpenAPIV3SchemaRef) MarshalJSON() ([]byte, error) {
 // silently dropped from the output.
 func (s OpenAPIV3Schema) MarshalJSON() ([]byte, error) {
 	type Alias OpenAPIV3Schema
-	b, err := json.Marshal(Alias(s))
+	var encoded interface{} = Alias(s)
+	if s.declaresEmptyRequired() {
+		// The outer Required is shallower than the embedded omitempty one, so it
+		// wins and writes required: [] (appended after the other keys).
+		encoded = struct {
+			Alias
+			Required *[]string `json:"required"`
+		}{Alias(s), &[]string{}}
+	}
+	b, err := json.Marshal(encoded)
 	if err != nil {
 		return nil, err
 	}
@@ -359,6 +369,14 @@ func (s OpenAPIV3Schema) MarshalJSON() ([]byte, error) {
 		m[k] = ev
 	}
 	return json.Marshal(m)
+}
+
+// declaresEmptyRequired reports whether the schema is an object with properties
+// whose author declared requiredness and listed no required field. omitempty
+// drops an empty Required, so without this the spec could not tell "declared,
+// every field optional" from "never declared".
+func (s OpenAPIV3Schema) declaresEmptyRequired() bool {
+	return s.RequiredDeclared && len(s.Required) == 0 && len(s.Properties) > 0
 }
 
 func (s *OpenAPIV3Schema) CamelCase() {
