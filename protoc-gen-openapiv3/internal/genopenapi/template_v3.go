@@ -16,6 +16,7 @@ import (
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/casing"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
+	"google.golang.org/genproto/googleapis/api/annotations"
 	"google.golang.org/genproto/googleapis/api/visibility"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/descriptorpb"
@@ -606,6 +607,158 @@ func applyOpenAPIV3FieldAnnotationsToArray(schema *OpenAPIV3Schema, field *descr
 		}
 	}
 	schema.MinItems = uint64Ptr(minItems)
+}
+
+const (
+	// presenceExtension marks a proto3 `optional` scalar or enum field: the
+	// API tells "not set" apart from the zero value.
+	presenceExtension = "x-coralogix-presence"
+	// collectionExtension marks a repeated field whose order does not matter.
+	collectionExtension = "x-coralogix-collection"
+)
+
+// applyProtoFieldFacts copies proto facts that the type-specific builders do
+// not read onto a field's property schema: proto3 `optional` presence, the
+// openapiv3_field default, and the OUTPUT_ONLY and UNORDERED_LIST field
+// behaviors. It copies the facts as they are and does not validate them.
+func applyProtoFieldFacts(schema *OpenAPIV3SchemaRef, field *descriptor.Field) *OpenAPIV3SchemaRef {
+	if schema == nil {
+		return nil
+	}
+	behaviors := fieldBehaviors(field)
+	presence := hasProtoPresence(field)
+	rawDefault := fieldDefaultAnnotation(field)
+	outputOnly := slices.Contains(behaviors, annotations.FieldBehavior_OUTPUT_ONLY)
+	unorderedList := isRepeatedField(field) && schema.OpenAPIV3Schema != nil && schema.Type == "array" &&
+		slices.Contains(behaviors, annotations.FieldBehavior_UNORDERED_LIST)
+	if !presence && rawDefault == "" && !outputOnly && !unorderedList {
+		return schema
+	}
+
+	target := mutableFieldSchema(schema)
+	if presence {
+		setExtensionIfAbsent(target, presenceExtension, true)
+	}
+	if rawDefault != "" {
+		target.Default = typedFieldDefault(rawDefault, schema, field)
+	}
+	if outputOnly {
+		target.ReadOnly = true
+	}
+	if unorderedList {
+		target.UniqueItems = true
+		setExtensionIfAbsent(target, collectionExtension, "set")
+	}
+	// A bare $ref keeps its link. The facts are keys next to it.
+	return &OpenAPIV3SchemaRef{Ref: schema.Ref, OpenAPIV3Schema: target}
+}
+
+// mutableFieldSchema returns a copy of schema that is safe to change. For a
+// bare $ref, it is an empty schema for the keys next to the $ref. Inline
+// schemas can be shared (schemaMap entries), so they are copied.
+func mutableFieldSchema(schema *OpenAPIV3SchemaRef) *OpenAPIV3Schema {
+	if schema.OpenAPIV3Schema == nil {
+		return &OpenAPIV3Schema{}
+	}
+	schemaCopy := *schema.OpenAPIV3Schema
+	schemaCopy.OpenAPIV3Extensions = maps.Clone(schemaCopy.OpenAPIV3Extensions)
+	return &schemaCopy
+}
+
+// setExtensionIfAbsent sets an x-* key, unless openapiv3_field.extensions
+// already sets it. The explicit proto annotation wins.
+func setExtensionIfAbsent(schema *OpenAPIV3Schema, key string, value interface{}) {
+	if _, ok := schema.OpenAPIV3Extensions[key]; ok {
+		return
+	}
+	if schema.OpenAPIV3Extensions == nil {
+		schema.OpenAPIV3Extensions = make(OpenAPIV3Extensions)
+	}
+	schema.OpenAPIV3Extensions[key] = value
+}
+
+// hasProtoPresence reports whether the field is a proto3 `optional` scalar or
+// enum. Messages already have presence, and repeated fields cannot be optional.
+func hasProtoPresence(field *descriptor.Field) bool {
+	if !field.GetProto3Optional() {
+		return false
+	}
+	switch field.GetType() {
+	case descriptorpb.FieldDescriptorProto_TYPE_MESSAGE, descriptorpb.FieldDescriptorProto_TYPE_GROUP:
+		return false
+	}
+	return true
+}
+
+func fieldBehaviors(field *descriptor.Field) []annotations.FieldBehavior {
+	if field.Options == nil || !proto.HasExtension(field.Options, annotations.E_FieldBehavior) {
+		return nil
+	}
+	behaviors, _ := proto.GetExtension(field.Options, annotations.E_FieldBehavior).([]annotations.FieldBehavior)
+	return behaviors
+}
+
+// fieldDefaultAnnotation returns the field's openapiv3_field default, or "".
+func fieldDefaultAnnotation(field *descriptor.Field) string {
+	if field.Options == nil || !proto.HasExtension(field.Options, options.E_Openapiv3Field) {
+		return ""
+	}
+	fieldExtension, ok := proto.GetExtension(field.Options, options.E_Openapiv3Field).(*options.JSONSchema)
+	if !ok {
+		return ""
+	}
+	return fieldExtension.GetDefault()
+}
+
+// typedFieldDefault converts the default text by the OpenAPI type of the
+// field schema: "true" -> true, "0" -> 0, "[]" -> []. String and enum
+// defaults are plain text ("SEVERITY_INFO"). A value that does not convert
+// is copied as text; the API linter checks that defaults are valid.
+func typedFieldDefault(raw string, schema *OpenAPIV3SchemaRef, field *descriptor.Field) RawExample {
+	value := strings.TrimSpace(raw)
+	switch fieldDefaultKind(schema, field) {
+	case "boolean":
+		if value == "true" || value == "false" {
+			return RawExample(value)
+		}
+	case "number":
+		if isJSONNumber(value) {
+			return RawExample(value)
+		}
+	case "json":
+		if json.Valid([]byte(value)) {
+			return RawExample(value)
+		}
+	}
+	text, _ := json.Marshal(raw)
+	return RawExample(text)
+}
+
+// fieldDefaultKind returns how to read a default: "boolean", "number",
+// "json" (arrays, objects, messages, untyped well-known types), or "text".
+func fieldDefaultKind(schema *OpenAPIV3SchemaRef, field *descriptor.Field) string {
+	if !isRepeatedField(field) && field.GetType() == descriptorpb.FieldDescriptorProto_TYPE_ENUM {
+		return "text"
+	}
+	if schema.Ref != "" || schema.OpenAPIV3Schema == nil {
+		return "json"
+	}
+	switch schema.Type {
+	case "boolean":
+		return "boolean"
+	case "integer", "number":
+		return "number"
+	case "string":
+		return "text"
+	}
+	return "json"
+}
+
+func isJSONNumber(value string) bool {
+	if value == "" || !json.Valid([]byte(value)) {
+		return false
+	}
+	return value[0] == '-' || (value[0] >= '0' && value[0] <= '9')
 }
 
 func mapValueSchemaAllowsFormatOverride(field *descriptor.Field) bool {
@@ -2668,12 +2821,12 @@ func buildPropertySchemaWithReferencesFromField(field *descriptor.Field, registr
 		// (title/description/readOnly/deprecated/extensions) goes on the array,
 		// not on message/enum item $refs.
 		applyOpenAPIV3FieldAnnotationsToArray(schema, field)
-		return &OpenAPIV3SchemaRef{
+		return applyProtoFieldFacts(&OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
-		}
+		}, field)
 	}
 	propertySchema, _ := buildPropertySchemaWithReferencesFromFieldType(field, registry, resolvedNames)
-	return propertySchema
+	return applyProtoFieldFacts(propertySchema, field)
 }
 
 func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, registry *descriptor.Registry, resolvedNames map[string]string) (*OpenAPIV3SchemaRef, RawExample) {
@@ -3190,12 +3343,12 @@ func buildPropertySchemaFromField(field *descriptor.Field, schemaMap map[string]
 		// (title/description/readOnly/deprecated/extensions) goes on the array,
 		// not on message/enum item $refs.
 		applyOpenAPIV3FieldAnnotationsToArray(schema, field)
-		return &OpenAPIV3SchemaRef{
+		return applyProtoFieldFacts(&OpenAPIV3SchemaRef{
 			OpenAPIV3Schema: schema,
-		}
+		}, field)
 	}
 	propertySchema, _ := buildPropertySchemaFromFieldType(field, schemaMap, resolvedNames, registry)
-	return propertySchema
+	return applyProtoFieldFacts(propertySchema, field)
 }
 func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[string]*OpenAPIV3SchemaRef, resolvedNames map[string]string, registry *descriptor.Registry) (*OpenAPIV3SchemaRef, RawExample) {
 	var title string

@@ -299,7 +299,7 @@ func (s *OpenAPIV3SchemaRef) MarshalJSON() ([]byte, error) {
 	if s == nil {
 		return json.Marshal(nil)
 	}
-	if s.Ref != "" {
+	if s.Ref != "" && s.OpenAPIV3Schema == nil {
 		return json.Marshal(map[string]string{"$ref": s.Ref})
 	}
 	if s.OpenAPIV3Schema == nil {
@@ -307,7 +307,26 @@ func (s *OpenAPIV3SchemaRef) MarshalJSON() ([]byte, error) {
 	}
 	schema := *s.OpenAPIV3Schema
 	schema.CamelCase()
-	return json.Marshal(schema)
+	if s.Ref == "" {
+		return json.Marshal(schema)
+	}
+	// Keys next to a $ref (OpenAPI 3.1), such as a field default or
+	// x-coralogix-presence. An allOf wrapper would work too, but breaking-change
+	// tools report a new wrapper as a type change.
+	b, err := json.Marshal(schema)
+	if err != nil {
+		return nil, err
+	}
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal(b, &m); err != nil {
+		return nil, err
+	}
+	ref, err := json.Marshal(s.Ref)
+	if err != nil {
+		return nil, err
+	}
+	m["$ref"] = ref
+	return json.Marshal(m)
 }
 
 // MarshalJSON flattens the schema's x-* extensions (e.g. x-stability) onto the
