@@ -68,6 +68,27 @@ func TestPopulateQueryParametersWithFieldMask(t *testing.T) {
 			values:          url.Values{"updateMask": {"subThing.subValue"}},
 			want:            []string{"subThing.sub_value"},
 		},
+		{
+			name:            "Struct dynamic path",
+			msg:             &examplepb.NonStandardUpdateRequest{},
+			targetFieldPath: "body",
+			values:          url.Values{"updateMask": {"structField.name.first"}},
+			want:            []string{"struct_field.name.first"},
+		},
+		{
+			name:            "Value dynamic path",
+			msg:             &examplepb.NonStandardUpdateRequest{},
+			targetFieldPath: "body",
+			values:          url.Values{"updateMask": {"valueField.name.first"}},
+			want:            []string{"value_field.name.first"},
+		},
+		{
+			name:            "dynamic paths with explicit JSON names",
+			msg:             &examplepb.NonStandardWithJSONNamesUpdateRequest{},
+			targetFieldPath: "body",
+			values:          url.Values{"updateMask": {"StructField.name.first,ValueField.amount"}},
+			want:            []string{"struct_field.name.first", "value_field.amount"},
+		},
 	}
 
 	for _, test := range tests {

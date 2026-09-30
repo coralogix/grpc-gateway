@@ -119,11 +119,13 @@ func normalizeFieldMaskQueryValue(value string, target protoreflect.MessageDescr
 
 func normalizeFieldMaskQueryPath(path string, message protoreflect.MessageDescriptor) (string, error) {
 	segments := strings.Split(path, ".")
-	for i, segment := range segments {
+	for _, segment := range segments {
 		if segment == "" {
 			return "", fmt.Errorf("invalid empty path segment in %q", path)
 		}
+	}
 
+	for i, segment := range segments {
 		field := message.Fields().ByJSONName(segment)
 		if field == nil {
 			field = message.Fields().ByName(protoreflect.Name(segment))
@@ -138,6 +140,9 @@ func normalizeFieldMaskQueryPath(path string, message protoreflect.MessageDescri
 		}
 		if field.Message() == nil || field.IsList() || field.IsMap() {
 			return "", fmt.Errorf("field %q in %q is not a singular message", segment, message.FullName())
+		}
+		if isDynamicProtoMessage(field.Message()) {
+			return strings.Join(segments, "."), nil
 		}
 		message = field.Message()
 	}
