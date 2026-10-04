@@ -2079,10 +2079,7 @@ func extractRequestBodyFieldCombinations(binding *descriptor.Binding, registry *
 		if ok && schemaExtension != nil {
 			title = schemaExtension.GetJsonSchema().GetTitle()
 			description = schemaExtension.GetJsonSchema().GetDescription()
-			externalDocs = &OpenAPIV3ExternalDocs{
-				Description: schemaExtension.GetExternalDocs().GetDescription(),
-				URL:         schemaExtension.GetExternalDocs().GetUrl(),
-			}
+			externalDocs = schemaExternalDocs(schemaExtension)
 			for k, v := range schemaExtension.GetJsonSchema().GetExtensions() {
 				if extensions == nil {
 					extensions = make(OpenAPIV3Extensions)
@@ -2485,6 +2482,16 @@ func buildEnumSchemas(param param, resolvedNames map[string]string) map[string]*
 	return schemas
 }
 
+// schemaExternalDocs returns nil unless openapiv3_schema.external_docs sets a URL,
+// so schemas annotated only for title/description don't emit externalDocs: {url: ""}.
+func schemaExternalDocs(s *options.Schema) *OpenAPIV3ExternalDocs {
+	ed := s.GetExternalDocs()
+	if ed.GetUrl() == "" {
+		return nil
+	}
+	return &OpenAPIV3ExternalDocs{Description: ed.GetDescription(), URL: ed.GetUrl()}
+}
+
 func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, registry *descriptor.Registry, resolvedNames map[string]string) *OpenAPIV3Schema {
 	var fieldsNotPartOfOneofGroup []*descriptor.Field
 	var requiredFields []string
@@ -2499,10 +2506,7 @@ func buildOpenAPIV3SchemaFromMessageWithReferences(message *descriptor.Message, 
 		if ok && schemaExtension != nil {
 			title = schemaExtension.GetJsonSchema().GetTitle()
 			description = schemaExtension.GetJsonSchema().GetDescription()
-			externalDocs = &OpenAPIV3ExternalDocs{
-				Description: schemaExtension.GetExternalDocs().GetDescription(),
-				URL:         schemaExtension.GetExternalDocs().GetUrl(),
-			}
+			externalDocs = schemaExternalDocs(schemaExtension)
 			if schemaExtension.Discriminator != nil {
 				discriminator = &OpenAPIV3Discriminator{
 					PropertyName: schemaExtension.GetDiscriminator().GetPropertyName(),
@@ -2566,10 +2570,7 @@ func buildOpenAPIV3SchemaFromMessage(message *descriptor.Message, schemaMap map[
 				}
 				extensions[k] = v
 			}
-			externalDocs = &OpenAPIV3ExternalDocs{
-				Description: schemaExtension.GetExternalDocs().GetDescription(),
-				URL:         schemaExtension.GetExternalDocs().GetUrl(),
-			}
+			externalDocs = schemaExternalDocs(schemaExtension)
 			requiredFields = schemaExtension.GetJsonSchema().GetRequired()
 		}
 	}

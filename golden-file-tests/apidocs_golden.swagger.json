@@ -896,9 +896,6 @@
             "THING_TYPE_PREMIUM": "#/components/schemas/Thing",
             "THING_TYPE_STANDARD": "#/components/schemas/Thing"
           }
-        },
-        "externalDocs": {
-          "url": ""
         }
       },
       "ThingSettings": {

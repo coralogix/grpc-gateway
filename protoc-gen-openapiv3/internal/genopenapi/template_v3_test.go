@@ -1618,6 +1618,55 @@ func TestOperationExternalDocs_OmittedWhenUnannotated(t *testing.T) {
 	}
 }
 
+// Messages whose openapiv3_schema option sets only title/description must not
+// emit an externalDocs object; one that sets external_docs.url keeps it.
+// Previously any openapiv3_schema option produced externalDocs: {url: ""}.
+func TestSchemaExternalDocs_OmittedWhenUnannotated(t *testing.T) {
+	newMsg := func(schema *options.Schema) *descriptor.Message {
+		msgOptions := &descriptorpb.MessageOptions{}
+		proto.SetExtension(msgOptions, options.E_Openapiv3Schema, schema)
+		return descriptorMessageFromProto(&descriptorpb.DescriptorProto{
+			Name:    proto.String("Filter"),
+			Options: msgOptions,
+		})
+	}
+	build := map[string]func(*descriptor.Message) *OpenAPIV3Schema{
+		"withReferences": func(msg *descriptor.Message) *OpenAPIV3Schema {
+			return buildOpenAPIV3SchemaFromMessageWithReferences(msg, descriptor.NewRegistry(), map[string]string{msg.FQMN(): "Filter"})
+		},
+		"inline": func(msg *descriptor.Message) *OpenAPIV3Schema {
+			schema, _ := buildOpenAPIV3SchemaFromMessage(msg, nil, map[string]string{msg.FQMN(): "Filter"}, descriptor.NewRegistry())
+			return schema
+		},
+	}
+
+	for name, fn := range build {
+		t.Run(name+"/unannotated", func(t *testing.T) {
+			schema := fn(newMsg(&options.Schema{
+				JsonSchema: &options.JSONSchema{Title: "Filter", Description: "A filter."},
+			}))
+			if schema.ExternalDocs != nil {
+				t.Fatalf("externalDocs = %+v, want nil", schema.ExternalDocs)
+			}
+			raw, err := json.Marshal(schema)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if strings.Contains(string(raw), "externalDocs") {
+				t.Fatalf("marshalled schema contains externalDocs: %s", raw)
+			}
+		})
+		t.Run(name+"/annotated", func(t *testing.T) {
+			schema := fn(newMsg(&options.Schema{
+				ExternalDocs: &options.ExternalDocumentation{Url: "https://example.com/docs", Description: "Docs"},
+			}))
+			if schema.ExternalDocs == nil || schema.ExternalDocs.URL != "https://example.com/docs" || schema.ExternalDocs.Description != "Docs" {
+				t.Fatalf("externalDocs = %+v, want url and description preserved", schema.ExternalDocs)
+			}
+		})
+	}
+}
+
 // TestGeneratedSpecIsDeterministic asserts the same protos produce the exact same
 // OpenAPI spec on every generation — byte-for-byte, across the whole document
 // (paths, schemas, tags, everything), not just the tags array.
