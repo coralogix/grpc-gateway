@@ -32,6 +32,7 @@ var (
 	repeatedPathParamSeparator = flag.String("repeated_path_param_separator", "csv", "configures how repeated fields should be split. Allowed values are `csv`, `pipes`, `ssv` and `tsv`.")
 	allowPatchFeature          = flag.Bool("allow_patch_feature", true, "determines whether to use PATCH feature involving update masks (using google.protobuf.FieldMask).")
 	fieldMaskJSONNamesInQuery  = flag.Bool("fieldmask_json_names_in_query", false, "converts FieldMask query paths from JSON field names to protobuf field names using the request body descriptor")
+	requireFieldMaskInQuery    = flag.Bool("require_fieldmask_in_query", false, "rejects a PATCH request with 400 when its request message lists its FieldMask in openapiv3_schema json_schema.required and the FieldMask query parameter is missing")
 	omitPackageDoc             = flag.Bool("omit_package_doc", false, "if true, no package comment will be included in the generated code")
 	standalone                 = flag.Bool("standalone", false, "generates a standalone gateway package, which imports the target service package")
 	versionFlag                = flag.Bool("version", false, "print the current version")
@@ -82,7 +83,7 @@ func main() {
 
 		codegenerator.SetSupportedFeaturesOnPluginGen(gen)
 
-		generator := gengateway.New(reg, *useRequestContext, *registerFuncSuffix, *allowPatchFeature, *fieldMaskJSONNamesInQuery, *standalone, *useOpaqueAPI)
+		generator := gengateway.New(reg, *useRequestContext, *registerFuncSuffix, *allowPatchFeature, *fieldMaskJSONNamesInQuery, *requireFieldMaskInQuery, *standalone, *useOpaqueAPI)
 
 		if grpclog.V(1) {
 			grpclog.Infof("Parsing code generator request")

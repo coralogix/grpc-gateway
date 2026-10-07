@@ -22,13 +22,14 @@ type generator struct {
 	registerFuncSuffix        string
 	allowPatchFeature         bool
 	fieldMaskJSONNamesInQuery bool
+	requireFieldMaskInQuery   bool
 	standalone                bool
 	useOpaqueAPI              bool
 }
 
 // New returns a new generator which generates grpc gateway files.
 func New(reg *descriptor.Registry, useRequestContext bool, registerFuncSuffix string,
-	allowPatchFeature, fieldMaskJSONNamesInQuery, standalone bool, useOpaqueAPI bool) gen.Generator {
+	allowPatchFeature, fieldMaskJSONNamesInQuery, requireFieldMaskInQuery, standalone bool, useOpaqueAPI bool) gen.Generator {
 	var imports []descriptor.GoPackage
 	for _, pkgpath := range []string{
 		"context",
@@ -68,6 +69,7 @@ func New(reg *descriptor.Registry, useRequestContext bool, registerFuncSuffix st
 		registerFuncSuffix:        registerFuncSuffix,
 		allowPatchFeature:         allowPatchFeature,
 		fieldMaskJSONNamesInQuery: fieldMaskJSONNamesInQuery,
+		requireFieldMaskInQuery:   requireFieldMaskInQuery,
 		standalone:                standalone,
 		useOpaqueAPI:              useOpaqueAPI,
 	}
@@ -137,6 +139,7 @@ func (g *generator) generate(file *descriptor.File) (string, error) {
 		RegisterFuncSuffix:        g.registerFuncSuffix,
 		AllowPatchFeature:         g.allowPatchFeature,
 		FieldMaskJSONNamesInQuery: g.fieldMaskJSONNamesInQuery,
+		RequireFieldMaskInQuery:   g.requireFieldMaskInQuery,
 		UseOpaqueAPI:              g.useOpaqueAPI,
 	}
 	if g.reg != nil {
