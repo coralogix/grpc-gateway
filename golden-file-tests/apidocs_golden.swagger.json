@@ -52,7 +52,8 @@
                     ],
                     "format": "date-time",
                     "minLength": 0,
-                    "type": "string"
+                    "type": "string",
+                    "x-coralogix-presence": true
                   },
                   "id": {
                     "examples": [
@@ -350,7 +351,8 @@
                     ],
                     "format": "date-time",
                     "minLength": 0,
-                    "type": "string"
+                    "type": "string",
+                    "x-coralogix-presence": true
                   },
                   "id": {
                     "examples": [
@@ -583,7 +585,8 @@
             "format": "date-time",
             "examples": [
               "2021-01-01T00:00:00Z"
-            ]
+            ],
+            "x-coralogix-presence": true
           },
           "id": {
             "minLength": 0,
@@ -851,7 +854,8 @@
             "format": "date-time",
             "examples": [
               "2021-01-01T00:00:00Z"
-            ]
+            ],
+            "x-coralogix-presence": true
           },
           "id": {
             "minLength": 0,
@@ -993,7 +997,17 @@
             "minLength": 0,
             "type": "string",
             "format": "date-time",
-            "readOnly": true
+            "readOnly": true,
+            "x-coralogix-presence": true
+          },
+          "selectors": {
+            "maxProperties": 20,
+            "minProperties": 1,
+            "type": "object",
+            "additionalProperties": {
+              "minLength": 0,
+              "type": "string"
+            }
           }
         }
       },
@@ -1006,6 +1020,19 @@
         ],
         "type": "string",
         "description": "The type of the thing."
+      },
+      "SelectorsEntry": {
+        "type": "object",
+        "properties": {
+          "key": {
+            "minLength": 0,
+            "type": "string"
+          },
+          "value": {
+            "minLength": 0,
+            "type": "string"
+          }
+        }
       }
     }
   },

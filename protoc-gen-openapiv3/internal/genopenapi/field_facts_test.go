@@ -116,7 +116,8 @@ func TestProtoFieldFacts_NoPresenceWithoutProto3Optional(t *testing.T) {
 		resolvedNames map[string]string
 	}{
 		"plain scalar":     {field: makeFieldWithExtension("name", descriptorpb.FieldDescriptorProto_TYPE_STRING, nil)},
-		"wrapper":          {field: makeWrapperField("enabled", ".google.protobuf.BoolValue", nil)},
+		"json value":       {field: makeWrapperField("payload", ".google.protobuf.Value", nil)},
+		"repeated wrapper": {field: repeatedWrapper("labels", ".google.protobuf.StringValue")},
 		"optional message": {field: withProto3Optional(messageField), reg: reg, resolvedNames: resolvedNames},
 	}
 	for name, c := range cases {
@@ -126,6 +127,33 @@ func TestProtoFieldFacts_NoPresenceWithoutProto3Optional(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestProtoFieldFacts_PresenceOnSingularScalarMessages(t *testing.T) {
+	cases := map[string]*descriptor.Field{
+		"string":    makeWrapperField("folder_id", ".google.protobuf.StringValue", nil),
+		"bool":      makeWrapperField("enabled", ".google.protobuf.BoolValue", nil),
+		"int32":     makeWrapperField("count", ".google.protobuf.Int32Value", nil),
+		"bytes":     makeWrapperField("body", ".google.protobuf.BytesValue", nil),
+		"double":    makeWrapperField("ratio", ".google.protobuf.DoubleValue", nil),
+		"uint64":    makeWrapperField("size", ".google.protobuf.UInt64Value", nil),
+		"timestamp": makeWrapperField("when", ".google.protobuf.Timestamp", nil),
+		"duration":  makeWrapperField("ttl", ".google.protobuf.Duration", nil),
+		"mask":      makeWrapperField("paths", ".google.protobuf.FieldMask", nil),
+	}
+	for name, field := range cases {
+		for builder, schema := range buildWithBothBuilders(t, field, nil, nil) {
+			if extension(schema, presenceExtension) != true {
+				t.Errorf("%s (%s): %s = %v, want true", name, builder, presenceExtension, extension(schema, presenceExtension))
+			}
+		}
+	}
+}
+
+func repeatedWrapper(name, typeName string) *descriptor.Field {
+	field := makeWrapperField(name, typeName, nil)
+	field.Label = descriptorpb.FieldDescriptorProto_LABEL_REPEATED.Enum()
+	return field
 }
 
 func TestProtoFieldFacts_ExplicitPresenceExtensionWins(t *testing.T) {

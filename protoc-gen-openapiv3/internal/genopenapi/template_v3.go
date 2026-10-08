@@ -610,17 +610,18 @@ func applyOpenAPIV3FieldAnnotationsToArray(schema *OpenAPIV3Schema, field *descr
 }
 
 const (
-	// presenceExtension marks a proto3 `optional` scalar or enum field: the
-	// API tells "not set" apart from the zero value.
+	// presenceExtension marks a field whose omission differs from its zero
+	// value: a proto3 `optional` scalar or enum, or a singular message that
+	// renders as a scalar, such as a wrapper or a Timestamp.
 	presenceExtension = "x-coralogix-presence"
 	// collectionExtension marks a repeated field whose order does not matter.
 	collectionExtension = "x-coralogix-collection"
 )
 
 // applyProtoFieldFacts copies proto facts that the type-specific builders do
-// not read onto a field's property schema: proto3 `optional` presence, the
-// openapiv3_field default, and the OUTPUT_ONLY and UNORDERED_LIST field
-// behaviors. It copies the facts as they are and does not validate them.
+// not read onto a field's property schema: presence, the openapiv3_field
+// default, and the OUTPUT_ONLY and UNORDERED_LIST field behaviors. It copies
+// the facts as they are and does not validate them.
 func applyProtoFieldFacts(schema *OpenAPIV3SchemaRef, field *descriptor.Field) *OpenAPIV3SchemaRef {
 	if schema == nil {
 		return nil
@@ -677,9 +678,34 @@ func setExtensionIfAbsent(schema *OpenAPIV3Schema, key string, value interface{}
 	schema.OpenAPIV3Extensions[key] = value
 }
 
-// hasProtoPresence reports whether the field is a proto3 `optional` scalar or
-// enum. Messages already have presence, and repeated fields cannot be optional.
+// scalarMessageTypes are the well-known messages that render as a scalar
+// schema: the google.protobuf.*Value wrappers, Timestamp, Duration, and
+// FieldMask. A singular field of one of these types has presence the same way
+// a proto3 optional scalar does: omitting it is distinct from sending the zero
+// value. Other messages render as objects, which show presence already.
+var scalarMessageTypes = map[string]struct{}{
+	".google.protobuf.DoubleValue": {},
+	".google.protobuf.FloatValue":  {},
+	".google.protobuf.Int64Value":  {},
+	".google.protobuf.UInt64Value": {},
+	".google.protobuf.Int32Value":  {},
+	".google.protobuf.UInt32Value": {},
+	".google.protobuf.BoolValue":   {},
+	".google.protobuf.StringValue": {},
+	".google.protobuf.BytesValue":  {},
+	".google.protobuf.Timestamp":   {},
+	".google.protobuf.Duration":    {},
+	".google.protobuf.FieldMask":   {},
+}
+
+// hasProtoPresence reports whether omitting the field differs from its zero
+// value. That is a proto3 `optional` scalar or enum, or a singular message
+// in scalarMessageTypes. Other messages already have presence, and repeated
+// fields cannot be optional.
 func hasProtoPresence(field *descriptor.Field) bool {
+	if isSingularScalarMessage(field) {
+		return true
+	}
 	if !field.GetProto3Optional() {
 		return false
 	}
@@ -688,6 +714,14 @@ func hasProtoPresence(field *descriptor.Field) bool {
 		return false
 	}
 	return true
+}
+
+func isSingularScalarMessage(field *descriptor.Field) bool {
+	if field.GetType() != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE || isRepeatedField(field) {
+		return false
+	}
+	_, ok := scalarMessageTypes[field.GetTypeName()]
+	return ok
 }
 
 func fieldBehaviors(field *descriptor.Field) []annotations.FieldBehavior {
@@ -2850,6 +2884,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	var rawExample RawExample = nil
 	var extensions OpenAPIV3Extensions
 	var valueSchema *options.JSONSchema
+	var minProperties, maxProperties uint64
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
 	}
@@ -2876,6 +2911,8 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			readOnly = fieldExtension.ReadOnly
 			jsonExample = fieldExtension.Example
 			valueSchema = fieldExtension.ValueSchema
+			minProperties = fieldExtension.MinProperties
+			maxProperties = fieldExtension.MaxProperties
 		}
 	}
 	// Resolve the 3.0-style (bound + exclusive-bool) annotations into the JSON
@@ -3212,6 +3249,8 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
 					AdditionalProperties: additionalProperties,
+					MinProperties:        minProperties,
+					MaxProperties:        maxProperties,
 					Title:                title,
 					Description:          description,
 					Deprecated:           deprecated,
@@ -3371,6 +3410,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 	var arrayExample RawExample
 	var rawExample RawExample
 	var valueSchema *options.JSONSchema
+	var minProperties, maxProperties uint64
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
 	}
@@ -3394,6 +3434,8 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			readOnly = fieldExtension.ReadOnly
 			jsonExample = fieldExtension.Example
 			valueSchema = fieldExtension.ValueSchema
+			minProperties = fieldExtension.MinProperties
+			maxProperties = fieldExtension.MaxProperties
 		}
 	}
 	// Resolve the 3.0-style (bound + exclusive-bool) annotations into the JSON
@@ -3731,6 +3773,8 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 				return &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 					Type:                 "object",
 					AdditionalProperties: additionalProperties,
+					MinProperties:        minProperties,
+					MaxProperties:        maxProperties,
 					Title:                title,
 					Description:          description,
 					Deprecated:           deprecated,
