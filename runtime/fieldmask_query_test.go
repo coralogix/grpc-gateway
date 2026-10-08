@@ -8,6 +8,8 @@ import (
 	"github.com/google/go-cmp/cmp"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/runtime/internal/examplepb"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/utilities"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protodesc"
 	"google.golang.org/protobuf/reflect/protoreflect"
@@ -332,4 +334,39 @@ func fieldMaskTestMessageDescriptors(t *testing.T) (protoreflect.MessageDescript
 		t.Fatalf("protodesc.NewFile() failed: %v", err)
 	}
 	return file.Messages().ByName("UpdateRequest"), file.Messages().ByName("Resource")
+}
+
+func TestRequireFieldMaskQueryParameter(t *testing.T) {
+	tests := []struct {
+		name    string
+		mask    *fieldmaskpb.FieldMask
+		wantErr bool
+	}{
+		{name: "no query parameter", mask: nil, wantErr: true},
+		{name: "no paths", mask: &fieldmaskpb.FieldMask{}, wantErr: true},
+		{name: "empty value", mask: &fieldmaskpb.FieldMask{Paths: []string{""}}, wantErr: true},
+		{name: "one path", mask: &fieldmaskpb.FieldMask{Paths: []string{"name"}}, wantErr: false},
+		{name: "nested path", mask: &fieldmaskpb.FieldMask{Paths: []string{"config.http.timeout_seconds"}}, wantErr: false},
+		{name: "several paths", mask: &fieldmaskpb.FieldMask{Paths: []string{"name", "description"}}, wantErr: false},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := RequireFieldMaskQueryParameter(tt.mask, "update_mask")
+			if !tt.wantErr {
+				if err != nil {
+					t.Fatalf("RequireFieldMaskQueryParameter() = %v; want nil", err)
+				}
+				return
+			}
+			if got := status.Code(err); got != codes.InvalidArgument {
+				t.Fatalf("RequireFieldMaskQueryParameter() code = %v; want %v (err: %v)", got, codes.InvalidArgument, err)
+			}
+			if want := `missing required query parameter "update_mask"`; !strings.Contains(err.Error(), want) {
+				t.Fatalf("RequireFieldMaskQueryParameter() = %q; want it to contain %q", err, want)
+			}
+			if got := HTTPStatusFromCode(status.Code(err)); got != 400 {
+				t.Fatalf("HTTP status = %d; want 400", got)
+			}
+		})
+	}
 }

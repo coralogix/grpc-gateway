@@ -10,8 +10,10 @@ import (
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/casing"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
+	openapiv3options "github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-openapiv3/options"
 	"github.com/grpc-ecosystem/grpc-gateway/v2/utilities"
 	"google.golang.org/grpc/grpclog"
+	"google.golang.org/protobuf/proto"
 )
 
 type param struct {
@@ -21,6 +23,7 @@ type param struct {
 	RegisterFuncSuffix        string
 	AllowPatchFeature         bool
 	FieldMaskJSONNamesInQuery bool
+	RequireFieldMaskInQuery   bool
 	OmitPackageDoc            bool
 	UseOpaqueAPI              bool
 }
@@ -30,6 +33,7 @@ type binding struct {
 	Registry                  *descriptor.Registry
 	AllowPatchFeature         bool
 	FieldMaskJSONNamesInQuery bool
+	RequireFieldMaskInQuery   bool
 	UseOpaqueAPI              bool
 }
 
@@ -117,20 +121,71 @@ func (b binding) LookupEnum(p descriptor.Parameter) *descriptor.Enum {
 // FieldMaskField returns the golang-style name of the variable for a FieldMask, if there is exactly one of that type in
 // the message. Otherwise, it returns an empty string.
 func (b binding) FieldMaskField() string {
+	if f := b.fieldMask(); f != nil {
+		return casing.Camel(f.GetName())
+	}
+	return ""
+}
+
+// fieldMask returns the FieldMask field of the request message, if there is
+// exactly one of that type in the message. Otherwise, it returns nil.
+func (b binding) fieldMask() *descriptor.Field {
 	var fieldMaskField *descriptor.Field
 	for _, f := range b.Method.RequestType.Fields {
 		if f.GetTypeName() == ".google.protobuf.FieldMask" {
 			// if there is more than 1 FieldMask for this request, then return none
 			if fieldMaskField != nil {
-				return ""
+				return nil
 			}
 			fieldMaskField = f
 		}
 	}
-	if fieldMaskField != nil {
-		return casing.Camel(fieldMaskField.GetName())
+	return fieldMaskField
+}
+
+// RequiredQueryFieldMask returns the protobuf name of the FieldMask field that a
+// PATCH request must send as a query parameter. It returns an empty string when
+// the check does not apply.
+//
+// The check applies when require_fieldmask_in_query is set, the method is PATCH,
+// the request message has exactly one FieldMask field, the request message lists
+// that field in openapiv3_schema json_schema.required, and the body is not "*".
+// With body "*" the FieldMask is part of the request body, not the query.
+func (b binding) RequiredQueryFieldMask() string {
+	if !b.RequireFieldMaskInQuery || b.HTTPMethod != "PATCH" {
+		return ""
 	}
-	return ""
+	if b.Body != nil && len(b.Body.FieldPath) == 0 {
+		return ""
+	}
+	f := b.fieldMask()
+	if f == nil || !requiredInOpenAPISchema(b.Method.RequestType, f) {
+		return ""
+	}
+	return f.GetName()
+}
+
+// requiredInOpenAPISchema reports whether msg lists field in its
+// openapiv3_schema json_schema.required option, by protobuf or JSON name.
+func requiredInOpenAPISchema(msg *descriptor.Message, field *descriptor.Field) bool {
+	opts := msg.GetOptions()
+	if opts == nil || !proto.HasExtension(opts, openapiv3options.E_Openapiv3Schema) {
+		return false
+	}
+	schema, ok := proto.GetExtension(opts, openapiv3options.E_Openapiv3Schema).(*openapiv3options.Schema)
+	if !ok {
+		return false
+	}
+	jsonName := field.GetJsonName()
+	if jsonName == "" {
+		jsonName = casing.JSONCamelCase(field.GetName())
+	}
+	for _, name := range schema.GetJsonSchema().GetRequired() {
+		if name == field.GetName() || name == jsonName {
+			return true
+		}
+	}
+	return false
 }
 
 // queryParamFilter is a wrapper of utilities.DoubleArray which provides String() to output DoubleArray.Encoding in a stable and predictable format.
@@ -188,6 +243,7 @@ func applyTemplate(p param, reg *descriptor.Registry) (string, error) {
 					Registry:                  reg,
 					AllowPatchFeature:         p.AllowPatchFeature,
 					FieldMaskJSONNamesInQuery: p.FieldMaskJSONNamesInQuery,
+					RequireFieldMaskInQuery:   p.RequireFieldMaskInQuery,
 					UseOpaqueAPI:              p.UseOpaqueAPI,
 				}); err != nil {
 					return "", err
@@ -199,6 +255,7 @@ func applyTemplate(p param, reg *descriptor.Registry) (string, error) {
 					Registry:                  reg,
 					AllowPatchFeature:         p.AllowPatchFeature,
 					FieldMaskJSONNamesInQuery: p.FieldMaskJSONNamesInQuery,
+					RequireFieldMaskInQuery:   p.RequireFieldMaskInQuery,
 					UseOpaqueAPI:              p.UseOpaqueAPI,
 				}); err != nil {
 					return "", err
@@ -346,6 +403,7 @@ func request_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }}(ct
 	_ = template.Must(handlerTemplate.New("client-rpc-request-func").Funcs(funcMap).Parse(`
 {{ $AllowPatchFeature := .AllowPatchFeature }}
 {{ $UseOpaqueAPI := .UseOpaqueAPI }}
+{{ $RequiredQueryFieldMask := .RequiredQueryFieldMask }}
 {{ if .HasQueryParam }}
 var filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }} = {{ .QueryParamFilter }}
 {{ end }}
@@ -414,6 +472,7 @@ var filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }} = {{
 	if req.Body != nil {
 		_, _  = io.Copy(io.Discard, req.Body)
 	}
+	{{- if not $RequiredQueryFieldMask }}
 	{{- if $UseOpaqueAPI }}
 	if !protoReq.Has{{ .FieldMaskField }}() || len(protoReq.Get{{ .FieldMaskField }}().GetPaths()) == 0 {
 			if fieldMask, err := runtime.FieldMaskFromRequestBody(newReader(), protoReq.Get{{ .GetBodyFieldStructName }}()); err != nil {
@@ -430,6 +489,7 @@ var filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }} = {{
 				protoReq.{{ .FieldMaskField }} = fieldMask
 			}
 	}
+	{{- end }}
 	{{- end }}
 	{{- end }}
 {{- else }}
@@ -512,6 +572,11 @@ var filter_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index }} = {{
 	}
 	{{- end }}
 {{- end }}
+{{- if $RequiredQueryFieldMask }}
+	if err := runtime.RequireFieldMaskQueryParameter(protoReq.Get{{ .FieldMaskField }}(), {{ $RequiredQueryFieldMask | printf "%q" }}); err != nil {
+		return nil, metadata, err
+	}
+{{- end }}
 {{- if .Method.GetServerStreaming }}
 	stream, err := client.{{ .Method.GetName }}(ctx, &protoReq)
 	if err != nil {
@@ -592,6 +657,7 @@ func local_request_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index
 	_ = template.Must(localHandlerTemplate.New("local-client-rpc-request-func").Funcs(funcMap).Parse(`
 {{ $AllowPatchFeature := .AllowPatchFeature }}
 {{ $UseOpaqueAPI := .UseOpaqueAPI }}
+{{ $RequiredQueryFieldMask := .RequiredQueryFieldMask }}
 {{ template "local-request-func-signature" . }} {
 	var (
 		protoReq {{.Method.RequestType.GoType .Method.Service.File.GoPkg.Path}}
@@ -651,6 +717,7 @@ func local_request_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index
 		return nil, metadata, status.Errorf(codes.InvalidArgument, "%v", err)
 	}
 	{{- end }}
+	{{- if not $RequiredQueryFieldMask }}
 	{{- if $UseOpaqueAPI }}
 	if !protoReq.Has{{ .FieldMaskField }}() || len(protoReq.Get{{ .FieldMaskField }}().GetPaths()) == 0 {
 			if fieldMask, err := runtime.FieldMaskFromRequestBody(newReader(), protoReq.Get{{ .GetBodyFieldStructName }}()); err != nil {
@@ -667,6 +734,7 @@ func local_request_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index
 				protoReq.{{.FieldMaskField}} = fieldMask
 			}
 	}
+	{{- end }}
 	{{- end }}
 	{{- end }}
 {{- end }}
@@ -745,6 +813,11 @@ func local_request_{{ .Method.Service.GetName }}_{{ .Method.GetName }}_{{ .Index
 	}
 	{{- end }}
 {{- end}}
+{{- if $RequiredQueryFieldMask }}
+	if err := runtime.RequireFieldMaskQueryParameter(protoReq.Get{{ .FieldMaskField }}(), {{ $RequiredQueryFieldMask | printf "%q" }}); err != nil {
+		return nil, metadata, err
+	}
+{{- end }}
 {{- if .Method.GetServerStreaming }}
 	// TODO
 {{- else}}

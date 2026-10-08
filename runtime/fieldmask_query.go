@@ -6,8 +6,11 @@ import (
 	"strings"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/utilities"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/reflect/protoreflect"
+	field_mask "google.golang.org/protobuf/types/known/fieldmaskpb"
 )
 
 const fieldMaskMessageName = protoreflect.FullName("google.protobuf.FieldMask")
@@ -147,4 +150,17 @@ func normalizeFieldMaskQueryPath(path string, message protoreflect.MessageDescri
 		message = field.Message()
 	}
 	return strings.Join(segments, "."), nil
+}
+
+// RequireFieldMaskQueryParameter returns an InvalidArgument error when mask has
+// no non-empty path. Generated PATCH handlers call it after they parse the query,
+// for a FieldMask that the request message lists as required. name is the
+// protobuf name of the FieldMask field.
+func RequireFieldMaskQueryParameter(mask *field_mask.FieldMask, name string) error {
+	for _, path := range mask.GetPaths() {
+		if path != "" {
+			return nil
+		}
+	}
+	return status.Errorf(codes.InvalidArgument, "missing required query parameter %q", name)
 }

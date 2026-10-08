@@ -22,6 +22,20 @@ There are two scenarios:
 
 Set the `fieldmask_json_names_in_query=true` plugin option to accept JSON field names in a FieldMask query parameter for the hidden FieldMask case. The gateway converts each JSON path to the exact protobuf field path. It also accepts existing protobuf field paths. The option is disabled by default.
 
+Set the `require_fieldmask_in_query=true` plugin option to reject a PATCH request with `400 Bad Request` when its FieldMask is required and the FieldMask query parameter is missing or empty. The option is disabled by default. It applies only when all of these are true:
+
+- The HTTP method is `PATCH`.
+- The request message has exactly one `google.protobuf.FieldMask` field.
+- The request message lists that field in `openapiv3_schema` `json_schema.required`, by its protobuf name (`update_mask`) or its JSON name (`updateMask`).
+- The body is not `*`. With `body: "*"`, the FieldMask is part of the request body.
+
+When the option applies, the gateway does not build the FieldMask from the request body. Other methods and bindings are not changed.
+
+```text
+PATCH /v1/widgets/w1?update_mask=name   {"name": "x"}   -> forwarded with update_mask = [name]
+PATCH /v1/widgets/w1                    {"name": "x"}   -> 400: missing required query parameter "update_mask"
+```
+
 ## Example Usage
 
 1. Create a PATCH request.
