@@ -5303,6 +5303,22 @@ func TestMapValueSchema_Int32MapValueConstraints(t *testing.T) {
 	}
 }
 
+func TestMapSchema_PropertyCountLimits(t *testing.T) {
+	limits := &options.JSONSchema{MinProperties: 1, MaxProperties: 20}
+	stringMap, stringReg := makeMapFieldWithExtension(t, "labels", descriptorpb.FieldDescriptorProto_TYPE_STRING, limits)
+	messageMap, messageReg, _, _ := makeMessageMapFieldWithExtension(t, "values", limits)
+	for kind, c := range map[string]struct {
+		field *descriptor.Field
+		reg   *descriptor.Registry
+	}{"string values": {stringMap, stringReg}, "message values": {messageMap, messageReg}} {
+		for name, s := range mapSchemasFromBothSwitches(t, c.field, c.reg) {
+			if s.MinProperties != 1 || s.MaxProperties != 20 {
+				t.Errorf("%s (%s): minProperties=%d maxProperties=%d, want 1 and 20", kind, name, s.MinProperties, s.MaxProperties)
+			}
+		}
+	}
+}
+
 func TestMapValueSchema_Uint32MapValueConstraints(t *testing.T) {
 	field, reg := makeMapFieldWithExtension(t, "counts", descriptorpb.FieldDescriptorProto_TYPE_UINT32, &options.JSONSchema{
 		Description: "Map of names to counts.",
