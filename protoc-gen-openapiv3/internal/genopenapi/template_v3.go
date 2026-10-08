@@ -610,17 +610,17 @@ func applyOpenAPIV3FieldAnnotationsToArray(schema *OpenAPIV3Schema, field *descr
 }
 
 const (
-	// presenceExtension marks a proto3 `optional` scalar or enum field: the
-	// API tells "not set" apart from the zero value.
+	// presenceExtension marks a field whose omission differs from its zero
+	// value: a proto3 `optional` scalar or enum, or a singular wrapper.
 	presenceExtension = "x-coralogix-presence"
 	// collectionExtension marks a repeated field whose order does not matter.
 	collectionExtension = "x-coralogix-collection"
 )
 
 // applyProtoFieldFacts copies proto facts that the type-specific builders do
-// not read onto a field's property schema: proto3 `optional` presence, the
-// openapiv3_field default, and the OUTPUT_ONLY and UNORDERED_LIST field
-// behaviors. It copies the facts as they are and does not validate them.
+// not read onto a field's property schema: presence, the openapiv3_field
+// default, and the OUTPUT_ONLY and UNORDERED_LIST field behaviors. It copies
+// the facts as they are and does not validate them.
 func applyProtoFieldFacts(schema *OpenAPIV3SchemaRef, field *descriptor.Field) *OpenAPIV3SchemaRef {
 	if schema == nil {
 		return nil
@@ -677,9 +677,29 @@ func setExtensionIfAbsent(schema *OpenAPIV3Schema, key string, value interface{}
 	schema.OpenAPIV3Extensions[key] = value
 }
 
-// hasProtoPresence reports whether the field is a proto3 `optional` scalar or
-// enum. Messages already have presence, and repeated fields cannot be optional.
+// wrapperValueTypes are the singular google.protobuf.*Value messages. A field
+// of one of these types has presence the same way a proto3 optional scalar
+// does: omitting it is distinct from sending the zero value.
+var wrapperValueTypes = map[string]struct{}{
+	".google.protobuf.DoubleValue": {},
+	".google.protobuf.FloatValue":  {},
+	".google.protobuf.Int64Value":  {},
+	".google.protobuf.UInt64Value": {},
+	".google.protobuf.Int32Value":  {},
+	".google.protobuf.UInt32Value": {},
+	".google.protobuf.BoolValue":   {},
+	".google.protobuf.StringValue": {},
+	".google.protobuf.BytesValue":  {},
+}
+
+// hasProtoPresence reports whether omitting the field differs from its zero
+// value. That is a proto3 `optional` scalar or enum, or a singular
+// google.protobuf.*Value wrapper. Other messages already have presence, and
+// repeated fields cannot be optional.
 func hasProtoPresence(field *descriptor.Field) bool {
+	if isSingularWrapperValue(field) {
+		return true
+	}
 	if !field.GetProto3Optional() {
 		return false
 	}
@@ -688,6 +708,14 @@ func hasProtoPresence(field *descriptor.Field) bool {
 		return false
 	}
 	return true
+}
+
+func isSingularWrapperValue(field *descriptor.Field) bool {
+	if field.GetType() != descriptorpb.FieldDescriptorProto_TYPE_MESSAGE || isRepeatedField(field) {
+		return false
+	}
+	_, ok := wrapperValueTypes[field.GetTypeName()]
+	return ok
 }
 
 func fieldBehaviors(field *descriptor.Field) []annotations.FieldBehavior {
