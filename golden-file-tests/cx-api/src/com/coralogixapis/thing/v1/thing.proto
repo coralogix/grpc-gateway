@@ -55,7 +55,7 @@ message ThingSettings {
   double ratio = 5 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "0.5"}];
   // A default that does not convert is copied as text.
   int32 retries = 6 [(grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "many"}];
-  // An unordered list is a set. An array default is an array.
+  // An unordered list is a set and does not set uniqueItems. An array default is an array.
   repeated string labels = 7 [
     (google.api.field_behavior) = UNORDERED_LIST,
     (grpc.gateway.protoc_gen_openapiv3.options.openapiv3_field) = {default: "[]"}

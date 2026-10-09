@@ -221,8 +221,8 @@ func TestProtoFieldFacts_UnorderedListIsASet(t *testing.T) {
 	for name, c := range cases {
 		withFieldBehavior(c.field, annotations.FieldBehavior_UNORDERED_LIST)
 		for builder, schema := range buildWithBothBuilders(t, c.field, c.reg, c.resolvedNames) {
-			if schema.Type != "array" || !schema.UniqueItems || extension(schema, collectionExtension) != "set" {
-				t.Errorf("%s (%s): type %q, uniqueItems %v, %s %v; want an array set",
+			if schema.Type != "array" || schema.UniqueItems || extension(schema, collectionExtension) != "set" {
+				t.Errorf("%s (%s): type %q, uniqueItems %v, %s %v; want an array set without uniqueItems",
 					name, builder, schema.Type, schema.UniqueItems, collectionExtension, extension(schema, collectionExtension))
 			}
 		}
@@ -254,6 +254,19 @@ func TestProtoFieldFacts_UniqueItemsAloneIsNotASet(t *testing.T) {
 	for builder, schema := range buildWithBothBuilders(t, field, nil, nil) {
 		if !schema.UniqueItems || extension(schema, collectionExtension) != nil {
 			t.Errorf("%s: uniqueItems %v, %s %v; want uniqueItems only",
+				builder, schema.UniqueItems, collectionExtension, extension(schema, collectionExtension))
+		}
+	}
+}
+
+func TestProtoFieldFacts_UniqueItemsAnnotationSurvivesUnorderedList(t *testing.T) {
+	field := withFieldBehavior(
+		makeRepeatedFieldWithExtension("labels", descriptorpb.FieldDescriptorProto_TYPE_STRING, &options.JSONSchema{UniqueItems: true}),
+		annotations.FieldBehavior_UNORDERED_LIST,
+	)
+	for builder, schema := range buildWithBothBuilders(t, field, nil, nil) {
+		if !schema.UniqueItems || extension(schema, collectionExtension) != "set" {
+			t.Errorf("%s: uniqueItems %v, %s %v; want both",
 				builder, schema.UniqueItems, collectionExtension, extension(schema, collectionExtension))
 		}
 	}

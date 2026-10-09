@@ -647,7 +647,8 @@ func applyProtoFieldFacts(schema *OpenAPIV3SchemaRef, field *descriptor.Field) *
 		target.ReadOnly = true
 	}
 	if unorderedList {
-		target.UniqueItems = true
+		// uniqueItems rejects a repeated element. An unordered list only
+		// says the server does not keep order, so the set marker is enough.
 		setExtensionIfAbsent(target, collectionExtension, "set")
 	}
 	// A bare $ref keeps its link. The facts are keys next to it.
