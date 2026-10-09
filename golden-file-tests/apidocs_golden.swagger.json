@@ -925,7 +925,6 @@
             },
             "minItems": 0,
             "type": "array",
-            "uniqueItems": true,
             "x-coralogix-collection": "set"
           },
           "maxSize": {
@@ -990,7 +989,6 @@
             },
             "minItems": 0,
             "type": "array",
-            "uniqueItems": true,
             "x-coralogix-collection": "set"
           },
           "updateTime": {
