@@ -67,15 +67,25 @@ func stringEnum(values []string) []any {
 	return out
 }
 
-// integerEnum returns the annotated enum values of an integer as JSON numbers. It returns nil
-// when a value is not an integer, so a wrong annotation adds no constraint.
-func integerEnum(values []string) []any {
+// integerEnum returns the annotated enum values of an integer as JSON numbers. bits and signed
+// are the width and the sign of the protobuf field. It returns nil when a value is not an
+// integer that the field can hold, so a wrong annotation adds no constraint.
+func integerEnum(values []string, bits int, signed bool) []any {
 	if len(values) == 0 {
 		return nil
 	}
 	out := make([]any, 0, len(values))
 	for _, v := range values {
-		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		text := strings.TrimSpace(v)
+		if signed {
+			n, err := strconv.ParseInt(text, 10, bits)
+			if err != nil {
+				return nil
+			}
+			out = append(out, n)
+			continue
+		}
+		n, err := strconv.ParseUint(text, 10, bits)
 		if err != nil {
 			return nil
 		}
@@ -84,19 +94,22 @@ func integerEnum(values []string) []any {
 	return out
 }
 
-// booleanEnum returns the annotated enum values of a boolean as JSON booleans. It returns nil
-// when a value is not true or false.
+// booleanEnum returns the annotated enum values of a boolean as JSON booleans. Only the JSON
+// literals true and false are values; it returns nil for anything else.
 func booleanEnum(values []string) []any {
 	if len(values) == 0 {
 		return nil
 	}
 	out := make([]any, 0, len(values))
 	for _, v := range values {
-		b, err := strconv.ParseBool(strings.TrimSpace(v))
-		if err != nil {
+		switch strings.TrimSpace(v) {
+		case "true":
+			out = append(out, true)
+		case "false":
+			out = append(out, false)
+		default:
 			return nil
 		}
-		out = append(out, b)
 	}
 	return out
 }

@@ -4676,39 +4676,52 @@ func TestApplyValueSchema_BooleanEnumIsTyped(t *testing.T) {
 		t.Fatalf("boolean map values: enum = %#v, want the JSON boolean true", s.Enum)
 	}
 
-	// A value that is not a boolean adds no constraint: no string enum on a boolean schema.
-	got = applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
-		Type: "boolean",
-	}}, &options.JSONSchema{Enum: []string{"true", "yes"}}, boolField, "")
-	if s := got.OpenAPIV3Schema; len(s.Enum) > 0 {
-		t.Fatalf("an invalid boolean enum must add nothing, got %v", s.Enum)
+	// Only the JSON literals true and false are values. Anything else adds no constraint: no
+	// string enum on a boolean schema, and no other spelling read as a boolean.
+	for _, values := range [][]string{{"true", "yes"}, {"1"}, {"TRUE"}, {"t"}} {
+		got = applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+			Type: "boolean",
+		}}, &options.JSONSchema{Enum: values}, boolField, "")
+		if s := got.OpenAPIV3Schema; len(s.Enum) > 0 {
+			t.Fatalf("%v: an invalid boolean enum must add nothing, got %v", values, s.Enum)
+		}
 	}
 }
 
 // An integer field with an enum annotation lists the values as JSON numbers, in both schema
-// builders. A value that is not an integer adds no constraint.
+// builders. A value that is not an integer, or that the field cannot hold, adds no constraint.
 func TestIntegerFieldEnumIsTyped(t *testing.T) {
-	for _, fieldType := range []descriptorpb.FieldDescriptorProto_Type{
-		descriptorpb.FieldDescriptorProto_TYPE_INT32,
-		descriptorpb.FieldDescriptorProto_TYPE_UINT32,
-	} {
-		field := makeFieldWithExtension("seconds", fieldType, &options.JSONSchema{Enum: []string{"60", "3600"}})
+	enumJSON := func(s *OpenAPIV3SchemaRef) string {
+		out, err := json.Marshal(s.OpenAPIV3Schema.Enum)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return string(out)
+	}
+	tests := []struct {
+		name      string
+		fieldType descriptorpb.FieldDescriptorProto_Type
+		values    []string
+		want      string
+	}{
+		{"int32", descriptorpb.FieldDescriptorProto_TYPE_INT32, []string{"60", "3600"}, "[60,3600]"},
+		{"uint32", descriptorpb.FieldDescriptorProto_TYPE_UINT32, []string{"60", "3600"}, "[60,3600]"},
+		{"int32 negative", descriptorpb.FieldDescriptorProto_TYPE_INT32, []string{"-1", "1"}, "[-1,1]"},
+		{"not an integer", descriptorpb.FieldDescriptorProto_TYPE_INT32, []string{"60", "hour"}, "null"},
+		{"uint32 negative", descriptorpb.FieldDescriptorProto_TYPE_UINT32, []string{"-1"}, "null"},
+		{"uint32 above range", descriptorpb.FieldDescriptorProto_TYPE_UINT32, []string{"4294967296"}, "null"},
+		{"int32 above range", descriptorpb.FieldDescriptorProto_TYPE_INT32, []string{"2147483648"}, "null"},
+	}
+	for _, test := range tests {
+		field := makeFieldWithExtension("seconds", test.fieldType, &options.JSONSchema{Enum: test.values})
 		reg := descriptor.NewRegistry()
 		refSchema, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, map[string]string{})
 		plainSchema, _ := buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
 		for name, s := range map[string]*OpenAPIV3SchemaRef{"ref": refSchema, "plain": plainSchema} {
-			if !slices.Equal(s.OpenAPIV3Schema.Enum, []any{int64(60), int64(3600)}) {
-				t.Errorf("%s %s: enum = %#v, want JSON numbers 60 and 3600", fieldType, name, s.OpenAPIV3Schema.Enum)
+			if got := enumJSON(s); got != test.want {
+				t.Errorf("%s %s: enum = %s, want %s", test.name, name, got, test.want)
 			}
 		}
-		bad := makeFieldWithExtension("seconds", fieldType, &options.JSONSchema{Enum: []string{"60", "hour"}})
-		if s, _ := buildPropertySchemaWithReferencesFromFieldType(bad, reg, map[string]string{}); len(s.OpenAPIV3Schema.Enum) > 0 {
-			t.Errorf("%s: an invalid integer enum must add nothing, got %v", fieldType, s.OpenAPIV3Schema.Enum)
-		}
-	}
-	out, err := json.Marshal(&OpenAPIV3Schema{Type: "integer", Enum: integerEnum([]string{"60"})})
-	if err != nil || !strings.Contains(string(out), `"enum":[60]`) {
-		t.Fatalf("marshal = %s, %v; want \"enum\":[60]", out, err)
 	}
 }
 
