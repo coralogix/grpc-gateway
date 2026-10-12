@@ -462,7 +462,11 @@ func applyValueSchemaForMapValue(additionalPropertiesSchema *OpenAPIV3SchemaRef,
 			schema.Format = valueSchema.Format
 		}
 		if len(valueSchema.Enum) > 0 {
-			schema.Enum = slices.Clone(valueSchema.Enum)
+			schema.Enum = stringEnum(valueSchema.Enum)
+		}
+	case "boolean":
+		if len(valueSchema.Enum) > 0 {
+			schema.Enum = booleanEnum(valueSchema.Enum)
 		}
 	case "array":
 		if valueSchema.MaxItems != 0 {
@@ -1449,7 +1453,7 @@ func inlineResponseSchema(js *options.JSONSchema) *OpenAPIV3Schema {
 		Description:   js.Description,
 		Format:        js.Format,
 		Pattern:       js.Pattern,
-		Enum:          js.Enum,
+		Enum:          stringEnum(js.Enum),
 		Required:      js.Required,
 		MultipleOf:    js.MultipleOf,
 		MaxLength:     js.MaxLength,
@@ -2479,7 +2483,7 @@ func buildEnumSchemas(param param, resolvedNames map[string]string) map[string]*
 		}
 		enumSchema := &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 			Type:                "string",
-			Enum:                enumVariants,
+			Enum:                stringEnum(enumVariants),
 			Default:             enumDefaultValue,
 			Title:               title,
 			Description:         description,
@@ -2511,7 +2515,7 @@ func buildEnumSchemas(param param, resolvedNames map[string]string) map[string]*
 	}
 	codeSchema := &OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 		Type: "string",
-		Enum: codeEnumVariants,
+		Enum: stringEnum(codeEnumVariants),
 	}}
 	schemas[resolvedNames[".google.rpc.Code"]] = codeSchema
 	return schemas
@@ -2886,6 +2890,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 	var extensions OpenAPIV3Extensions
 	var valueSchema *options.JSONSchema
 	var minProperties, maxProperties uint64
+	var enum []string
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
 	}
@@ -2914,6 +2919,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			valueSchema = fieldExtension.ValueSchema
 			minProperties = fieldExtension.MinProperties
 			maxProperties = fieldExtension.MaxProperties
+			enum = fieldExtension.Enum
 		}
 	}
 	// Resolve the 3.0-style (bound + exclusive-bool) annotations into the JSON
@@ -3016,6 +3022,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			ExclusiveMaximum:    exclusiveMaximumPtr,
 			ExclusiveMinimum:    unsignedExclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
+			Enum:                integerEnum(enum),
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
@@ -3098,6 +3105,7 @@ func buildPropertySchemaWithReferencesFromFieldType(field *descriptor.Field, reg
 			ExclusiveMaximum:    exclusiveMaximumPtr,
 			ExclusiveMinimum:    exclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
+			Enum:                integerEnum(enum),
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
@@ -3412,6 +3420,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 	var rawExample RawExample
 	var valueSchema *options.JSONSchema
 	var minProperties, maxProperties uint64
+	var enum []string
 	if field.Options != nil && field.Options.Deprecated != nil {
 		deprecated = *field.Options.Deprecated
 	}
@@ -3437,6 +3446,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			valueSchema = fieldExtension.ValueSchema
 			minProperties = fieldExtension.MinProperties
 			maxProperties = fieldExtension.MaxProperties
+			enum = fieldExtension.Enum
 		}
 	}
 	// Resolve the 3.0-style (bound + exclusive-bool) annotations into the JSON
@@ -3515,6 +3525,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			ExclusiveMaximum:    exclusiveMaximumPtr,
 			ExclusiveMinimum:    unsignedExclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
+			Enum:                integerEnum(enum),
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,
@@ -3622,6 +3633,7 @@ func buildPropertySchemaFromFieldType(field *descriptor.Field, schemaMap map[str
 			ExclusiveMaximum:    exclusiveMaximumPtr,
 			ExclusiveMinimum:    exclusiveMinimumPtr,
 			MultipleOf:          multipleOf,
+			Enum:                integerEnum(enum),
 			Description:         description,
 			Deprecated:          deprecated,
 			ReadOnly:            readOnly,

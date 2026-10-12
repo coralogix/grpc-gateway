@@ -123,21 +123,21 @@ func (p *OpenAPIV3PathItem) operations() []*OpenAPIV3Operation {
 }
 
 type OpenAPIV3Operation struct {
-	Tags                []string                        `json:"tags,omitempty" yaml:"tags,omitempty"`
-	Summary             string                          `json:"summary,omitempty" yaml:"summary,omitempty"`
-	Description         string                          `json:"description,omitempty" yaml:"description,omitempty"`
-	OperationID         string                          `json:"operationId,omitempty" yaml:"operationId,omitempty"`
-	Parameters          []OpenAPIV3ParameterRef         `json:"parameters,omitempty" yaml:"parameters,omitempty"`
-	RequestBody         *OpenAPIV3RequestBodyRef        `json:"requestBody,omitempty" yaml:"requestBody,omitempty"`
-	Responses           OpenAPIV3Responses              `json:"responses" yaml:"responses"`
-	Callbacks           map[string]OpenAPIV3CallbackRef `json:"callbacks,omitempty" yaml:"callbacks,omitempty"`
-	Deprecated          bool                            `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
+	Tags        []string                        `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Summary     string                          `json:"summary,omitempty" yaml:"summary,omitempty"`
+	Description string                          `json:"description,omitempty" yaml:"description,omitempty"`
+	OperationID string                          `json:"operationId,omitempty" yaml:"operationId,omitempty"`
+	Parameters  []OpenAPIV3ParameterRef         `json:"parameters,omitempty" yaml:"parameters,omitempty"`
+	RequestBody *OpenAPIV3RequestBodyRef        `json:"requestBody,omitempty" yaml:"requestBody,omitempty"`
+	Responses   OpenAPIV3Responses              `json:"responses" yaml:"responses"`
+	Callbacks   map[string]OpenAPIV3CallbackRef `json:"callbacks,omitempty" yaml:"callbacks,omitempty"`
+	Deprecated  bool                            `json:"deprecated,omitempty" yaml:"deprecated,omitempty"`
 	// Pointer so an empty slice (operation-level override that clears
 	// document security) marshals as `security: []` instead of being dropped
 	// by omitempty.
-	Security            *[]OpenAPIV3SecurityReq         `json:"security,omitempty" yaml:"security,omitempty"`
-	Servers             []OpenAPIV3Server               `json:"servers,omitempty" yaml:"servers,omitempty"`
-	ExternalDocs        *OpenAPIV3ExternalDocs          `json:"externalDocs,omitempty" yaml:"externalDocs,omitempty"`
+	Security            *[]OpenAPIV3SecurityReq `json:"security,omitempty" yaml:"security,omitempty"`
+	Servers             []OpenAPIV3Server       `json:"servers,omitempty" yaml:"servers,omitempty"`
+	ExternalDocs        *OpenAPIV3ExternalDocs  `json:"externalDocs,omitempty" yaml:"externalDocs,omitempty"`
 	OpenAPIV3Extensions `json:"-" yaml:"-"`
 }
 
@@ -268,12 +268,14 @@ type OpenAPIV3Schema struct {
 	// MinItems is a pointer so a deliberate 0 serializes (omitempty drops a
 	// uint64 zero). Arrays emit minItems: 0 by default; nil means "not an array"
 	// / no minItems.
-	MinItems             *uint64                        `json:"minItems,omitempty" yaml:"minItems,omitempty"`
-	UniqueItems          bool                           `json:"uniqueItems,omitempty" yaml:"uniqueItems,omitempty"`
-	MaxProperties        uint64                         `json:"maxProperties,omitempty" yaml:"maxProperties,omitempty"`
-	MinProperties        uint64                         `json:"minProperties,omitempty" yaml:"minProperties,omitempty"`
-	Required             []string                       `json:"required,omitempty" yaml:"required,omitempty"`
-	Enum                 []string                       `json:"enum,omitempty" yaml:"enum,omitempty"`
+	MinItems      *uint64  `json:"minItems,omitempty" yaml:"minItems,omitempty"`
+	UniqueItems   bool     `json:"uniqueItems,omitempty" yaml:"uniqueItems,omitempty"`
+	MaxProperties uint64   `json:"maxProperties,omitempty" yaml:"maxProperties,omitempty"`
+	MinProperties uint64   `json:"minProperties,omitempty" yaml:"minProperties,omitempty"`
+	Required      []string `json:"required,omitempty" yaml:"required,omitempty"`
+	// Enum holds typed values: strings for a string or proto enum, integers for an
+	// integer, and booleans for a boolean.
+	Enum                 []any                          `json:"enum,omitempty" yaml:"enum,omitempty"`
 	Type                 string                         `json:"type,omitempty" yaml:"type,omitempty"`
 	AllOf                []*OpenAPIV3SchemaRef          `json:"allOf,omitempty" yaml:"allOf,omitempty"`
 	OneOf                []*OpenAPIV3SchemaRef          `json:"oneOf,omitempty" yaml:"oneOf,omitempty"`

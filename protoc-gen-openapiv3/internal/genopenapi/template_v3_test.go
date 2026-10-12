@@ -4605,7 +4605,7 @@ func TestApplyValueSchema_StringConstraints(t *testing.T) {
 	if s.Pattern != "^[a-z]+$" || s.Format != "email" {
 		t.Fatalf("expected string pattern/format, got %q/%q", s.Pattern, s.Format)
 	}
-	if !slices.Equal(s.Enum, []string{"A", "B"}) {
+	if !slices.Equal(s.Enum, []any{"A", "B"}) {
 		t.Fatalf("expected string enum override, got %v", s.Enum)
 	}
 	if string(firstExample(s)) != `"hello"` {
@@ -4667,16 +4667,48 @@ func TestApplyValueSchema_ObjectConstraints(t *testing.T) {
 	}
 }
 
-func TestApplyValueSchema_BooleanIgnoresEnum(t *testing.T) {
+func TestApplyValueSchema_BooleanEnumIsTyped(t *testing.T) {
+	boolField := makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_BOOL, nil)
 	got := applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
 		Type: "boolean",
-	}}, &options.JSONSchema{
-		Enum: []string{"true", "false"},
-	}, makeFieldWithExtension("value", descriptorpb.FieldDescriptorProto_TYPE_BOOL, nil), "")
+	}}, &options.JSONSchema{Enum: []string{"true"}}, boolField, "")
+	if s := got.OpenAPIV3Schema; !slices.Equal(s.Enum, []any{true}) {
+		t.Fatalf("boolean map values: enum = %#v, want the JSON boolean true", s.Enum)
+	}
 
-	s := got.OpenAPIV3Schema
-	if len(s.Enum) > 0 {
-		t.Fatalf("string enum values must not be applied to boolean schema, got %v", s.Enum)
+	// A value that is not a boolean adds no constraint: no string enum on a boolean schema.
+	got = applyValueSchemaForMapValue(&OpenAPIV3SchemaRef{OpenAPIV3Schema: &OpenAPIV3Schema{
+		Type: "boolean",
+	}}, &options.JSONSchema{Enum: []string{"true", "yes"}}, boolField, "")
+	if s := got.OpenAPIV3Schema; len(s.Enum) > 0 {
+		t.Fatalf("an invalid boolean enum must add nothing, got %v", s.Enum)
+	}
+}
+
+// An integer field with an enum annotation lists the values as JSON numbers, in both schema
+// builders. A value that is not an integer adds no constraint.
+func TestIntegerFieldEnumIsTyped(t *testing.T) {
+	for _, fieldType := range []descriptorpb.FieldDescriptorProto_Type{
+		descriptorpb.FieldDescriptorProto_TYPE_INT32,
+		descriptorpb.FieldDescriptorProto_TYPE_UINT32,
+	} {
+		field := makeFieldWithExtension("seconds", fieldType, &options.JSONSchema{Enum: []string{"60", "3600"}})
+		reg := descriptor.NewRegistry()
+		refSchema, _ := buildPropertySchemaWithReferencesFromFieldType(field, reg, map[string]string{})
+		plainSchema, _ := buildPropertySchemaFromFieldType(field, map[string]*OpenAPIV3SchemaRef{}, map[string]string{}, reg)
+		for name, s := range map[string]*OpenAPIV3SchemaRef{"ref": refSchema, "plain": plainSchema} {
+			if !slices.Equal(s.OpenAPIV3Schema.Enum, []any{int64(60), int64(3600)}) {
+				t.Errorf("%s %s: enum = %#v, want JSON numbers 60 and 3600", fieldType, name, s.OpenAPIV3Schema.Enum)
+			}
+		}
+		bad := makeFieldWithExtension("seconds", fieldType, &options.JSONSchema{Enum: []string{"60", "hour"}})
+		if s, _ := buildPropertySchemaWithReferencesFromFieldType(bad, reg, map[string]string{}); len(s.OpenAPIV3Schema.Enum) > 0 {
+			t.Errorf("%s: an invalid integer enum must add nothing, got %v", fieldType, s.OpenAPIV3Schema.Enum)
+		}
+	}
+	out, err := json.Marshal(&OpenAPIV3Schema{Type: "integer", Enum: integerEnum([]string{"60"})})
+	if err != nil || !strings.Contains(string(out), `"enum":[60]`) {
+		t.Fatalf("marshal = %s, %v; want \"enum\":[60]", out, err)
 	}
 }
 

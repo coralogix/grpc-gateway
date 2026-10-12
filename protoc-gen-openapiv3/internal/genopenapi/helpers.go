@@ -4,6 +4,7 @@
 package genopenapi
 
 import (
+	"strconv"
 	"strings"
 	"unicode"
 )
@@ -52,4 +53,50 @@ func toPascalCase(s string) string {
 	}
 
 	return builder.String()
+}
+
+// stringEnum returns the values of a string enum.
+func stringEnum(values []string) []any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(values))
+	for _, v := range values {
+		out = append(out, v)
+	}
+	return out
+}
+
+// integerEnum returns the annotated enum values of an integer as JSON numbers. It returns nil
+// when a value is not an integer, so a wrong annotation adds no constraint.
+func integerEnum(values []string) []any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(values))
+	for _, v := range values {
+		n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return nil
+		}
+		out = append(out, n)
+	}
+	return out
+}
+
+// booleanEnum returns the annotated enum values of a boolean as JSON booleans. It returns nil
+// when a value is not true or false.
+func booleanEnum(values []string) []any {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]any, 0, len(values))
+	for _, v := range values {
+		b, err := strconv.ParseBool(strings.TrimSpace(v))
+		if err != nil {
+			return nil
+		}
+		out = append(out, b)
+	}
+	return out
 }
