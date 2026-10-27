@@ -4,7 +4,7 @@ RUN apt-get update && \
     DEBIAN_FRONTEND=noninteractive apt-get -y install --no-install-recommends \
         wget \
         unzip \
-        openjdk-17-jre \
+        openjdk-21-jre \
         bzip2 \
         patch && \
     apt-get clean -y && \
@@ -18,7 +18,7 @@ RUN wget https://repo1.maven.org/maven2/io/swagger/swagger-codegen-cli/${SWAGGER
 	chmod +x /usr/local/bin/swagger-codegen
 
 # Install Bazelisk as bazel to manage Bazel
-RUN go install github.com/bazelbuild/bazelisk@latest && \
+RUN GOTOOLCHAIN=auto go install github.com/bazelbuild/bazelisk@latest && \
     mv $(which bazelisk) /usr/local/bin/bazel
 
 # Install buildifier for bazel formatting
