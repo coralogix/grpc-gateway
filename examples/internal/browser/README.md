@@ -1,13 +1,15 @@
 # Browser example
 
 This directory contains an example use of gRPC-Gateway with web browsers.
-The following commands automatically runs integration tests with phantomjs.
+The following commands run the integration tests in headless Chrome.
 
 ```shell-session
 $ npm install -g gulp-cli
 $ npm install
 $ gulp
 ```
+
+Puppeteer downloads the Chrome binary used by the headless test task.
 
 ## Other examples
 
