@@ -1,6 +1,8 @@
 package genopenapi
 
 import (
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/grpc-ecosystem/grpc-gateway/v2/internal/descriptor"
@@ -38,5 +40,31 @@ func TestJSONSiblingName(t *testing.T) {
 		if got := jsonSiblingName(in); got != want {
 			t.Errorf("jsonSiblingName(%q) = %q, want %q", in, got, want)
 		}
+	}
+}
+
+func TestJSONFieldSiblingMarksTarget(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "demo"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "demo", "p.schema.json"), []byte(`{"type":"object"}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	field := jsonFieldWithOption(t, "p.schema.json")
+	field.Type = descriptorpb.FieldDescriptorProto_TYPE_STRING.Enum()
+	field.Label = descriptorpb.FieldDescriptorProto_LABEL_OPTIONAL.Enum()
+	field.Message = &descriptor.Message{
+		DescriptorProto: &descriptorpb.DescriptorProto{Name: proto.String("Req")},
+		File:            &descriptor.File{FileDescriptorProto: &descriptorpb.FileDescriptorProto{Name: proto.String("demo/x.proto")}},
+	}
+	reg := descriptor.NewRegistry()
+	reg.SetJSONSchemaRoot(dir)
+	name, schema, ok := jsonFieldSibling(field, reg)
+	if !ok || name != "policyJson" {
+		t.Fatalf("got %q, %v", name, ok)
+	}
+	if got := schema.OpenAPIV3Extensions[JSONTargetExtension]; got != "policy" {
+		t.Fatalf("target extension = %v", got)
 	}
 }

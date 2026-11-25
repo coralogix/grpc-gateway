@@ -78,6 +78,10 @@ func parseJSONFieldSchema(msg []byte) string {
 	return ""
 }
 
+// JSONTargetExtension is set on a generated `<field>Json` property. Its value is
+// the name of the sibling string property the JSON document is encoded into.
+const JSONTargetExtension = "x-coralogix-json-target"
+
 // jsonSiblingName returns the property name of the JSON form of name:
 // `policy_json` for snake_case names, `policyJson` for camelCase ones.
 func jsonSiblingName(name string) string {
@@ -123,5 +127,8 @@ func jsonFieldSibling(field *descriptor.Field, registry *descriptor.Registry) (n
 	if s.Description == "" {
 		s.Description = fmt.Sprintf("Structured JSON form of `%s`, validated against a schema. Set either this or `%s`, not both. It is encoded to a compact JSON string before it reaches the service.", field.GetJsonName(), field.GetJsonName())
 	}
+	// Tell consumers (the REST facade) which sibling property this one encodes
+	// into, so they can validate and encode it from the published spec alone.
+	setExtensionIfAbsent(&s, JSONTargetExtension, field.GetName())
 	return jsonSiblingName(field.GetName()), &OpenAPIV3SchemaRef{OpenAPIV3Schema: &s}, true
 }
