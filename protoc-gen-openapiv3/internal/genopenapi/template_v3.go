@@ -2017,6 +2017,11 @@ func buildRequestBody(binding *descriptor.Binding, schemaMap map[string]*OpenAPI
 				if propertySchema != nil {
 					bodyProperties[*bodyField.Field.Name] = propertySchema
 				}
+				if propertySchema != nil {
+					if name, sibling, ok := jsonFieldSibling(bodyField.Field, registry); ok {
+						bodyProperties[name] = sibling
+					}
+				}
 			}
 		}
 	}
@@ -2774,6 +2779,9 @@ func buildSchemaFromFieldsWithReferences(
 			continue
 		}
 		properties[*field.Name] = propertySchema
+		if name, sibling, ok := jsonFieldSibling(field, registry); ok {
+			properties[name] = sibling
+		}
 	}
 	schema := &OpenAPIV3Schema{
 		Type:                "object",
@@ -2808,6 +2816,9 @@ func buildSchemaFromFields(
 			continue
 		}
 		properties[*field.Name] = propertySchema
+		if name, sibling, ok := jsonFieldSibling(field, registry); ok {
+			properties[name] = sibling
+		}
 	}
 	schema := &OpenAPIV3Schema{
 		Type:                "object",
