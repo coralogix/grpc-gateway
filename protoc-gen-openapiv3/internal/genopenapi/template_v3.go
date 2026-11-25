@@ -620,8 +620,9 @@ const (
 
 // applyProtoFieldFacts copies proto facts that the type-specific builders do
 // not read onto a field's property schema: presence, the openapiv3_field
-// default, and the OUTPUT_ONLY and UNORDERED_LIST field behaviors. It copies
-// the facts as they are and does not validate them.
+// default, the openapiv3_field iac knobs, and the OUTPUT_ONLY and
+// UNORDERED_LIST field behaviors. It copies the facts as they are and does not
+// validate them. validateIacHints checks the iac knobs.
 func applyProtoFieldFacts(schema *OpenAPIV3SchemaRef, field *descriptor.Field) *OpenAPIV3SchemaRef {
 	if schema == nil {
 		return nil
@@ -632,7 +633,8 @@ func applyProtoFieldFacts(schema *OpenAPIV3SchemaRef, field *descriptor.Field) *
 	outputOnly := slices.Contains(behaviors, annotations.FieldBehavior_OUTPUT_ONLY)
 	unorderedList := isRepeatedField(field) && schema.OpenAPIV3Schema != nil && schema.Type == "array" &&
 		slices.Contains(behaviors, annotations.FieldBehavior_UNORDERED_LIST)
-	if !presence && rawDefault == "" && !outputOnly && !unorderedList {
+	iac := iacExtensionValue(field)
+	if !presence && rawDefault == "" && !outputOnly && !unorderedList && iac == nil {
 		return schema
 	}
 
@@ -650,6 +652,9 @@ func applyProtoFieldFacts(schema *OpenAPIV3SchemaRef, field *descriptor.Field) *
 		// uniqueItems rejects a repeated element. An unordered list only
 		// says the server does not keep order, so the set marker is enough.
 		setExtensionIfAbsent(target, collectionExtension, "set")
+	}
+	if iac != nil {
+		setExtensionIfAbsent(target, iacExtension, iac)
 	}
 	// A bare $ref keeps its link. The facts are keys next to it.
 	return &OpenAPIV3SchemaRef{Ref: schema.Ref, OpenAPIV3Schema: target}
@@ -837,6 +842,9 @@ func mapValueSchemaType(field *descriptor.Field) string {
 }
 
 func applyTemplateV3(param param) (OpenAPIV3Document, error) {
+	if err := validateIacHints(param.Messages); err != nil {
+		return OpenAPIV3Document{}, err
+	}
 	resolvedNames := resolveNames(param)
 	enumSchemas := buildEnumSchemas(param, resolvedNames)
 	schemas := buildMessageSchemasWithReferences(param, resolvedNames)
