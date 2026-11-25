@@ -633,6 +633,38 @@ message JSONSchema {
   // map field, value_schema is merged into the generated additionalProperties
   // schema while the outer field annotation still describes the map object.
   JSONSchema value_schema = 49;
+  // Facts about the API that the generated Terraform tests need. They change
+  // only the generated tests, never the Terraform schema. The generator copies
+  // them to the `x-coralogix-iac` extension of the field.
+  IacHints iac = 50;
+}
+
+// `IacHints` tells the Terraform test generator facts about one field that the
+// proto types do not show. Field names in `conflicts_with` and `requires` are
+// proto field names of the sibling fields (the fields of the same message).
+// The generator writes them as JSON names.
+message IacHints {
+  // Example values for the field, written as JSON the way the API sends them.
+  // For example '"source logs | limit 1"' or '{"cpu": {"color": "#ff0000"}}'.
+  // Entry 0 is the create value. Entry 1 is the update value.
+  repeated string examples = 1;
+  // The API refuses a create request that does not set this field.
+  bool required_by_api = 2;
+  // Sibling fields that the API refuses to accept together with this field.
+  repeated string conflicts_with = 3;
+  // Sibling fields that must be set when this field is set.
+  repeated Requires requires = 4;
+  // Only for a field in a `oneof`: an update cannot switch to or from this
+  // arm. The test creates a new resource to use it.
+  bool arm_fixed = 5;
+
+  // `Requires` says that a sibling field must be set, and may say to what.
+  message Requires {
+    // The proto name of the sibling field.
+    string field = 1;
+    // Optional. The value of the sibling field, written as JSON.
+    string equals = 2;
+  }
 }
 
 // `Tag` is a representation of OpenAPI v2 specification's Tag object.
