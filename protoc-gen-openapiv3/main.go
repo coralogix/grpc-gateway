@@ -53,6 +53,7 @@ var (
 	enableRpcDeprecation           = flag.Bool("enable_rpc_deprecation", false, "whether to process grpc method's deprecated option.")
 	expandSlashedPathPatterns      = flag.Bool("expand_slashed_path_patterns", false, "if set, expands path parameters with URI sub-paths into the URI. For example, \"/v1/{name=projects/*}/resource\" becomes \"/v1/projects/{project}/resource\".")
 	useProto3FieldSemantics        = flag.Bool("use_proto3_field_semantics", false, "if set, uses proto3 field semantics for the OpenAPI schema. This means that fields are required by default.")
+	jsonSchemaRoot                 = flag.String("json_schema_root", "", "directory that proto import paths resolve from; locates the schema files named by the `json_field` option")
 	generateXGoType                = flag.Bool("generate_x_go_type", false, "if set, generates x-go-type extension using the go_package option from proto files")
 
 	_ = flag.Bool("logtostderr", false, "Legacy glog compatibility. This flag is a no-op, you can safely remove it")
@@ -181,6 +182,7 @@ func main() {
 	reg.SetEnableRpcDeprecation(*enableRpcDeprecation)
 	reg.SetExpandSlashedPathPatterns(*expandSlashedPathPatterns)
 	reg.SetGenerateXGoType(*generateXGoType)
+	reg.SetJSONSchemaRoot(*jsonSchemaRoot)
 
 	if err := reg.SetRepeatedPathParamSeparator(*repeatedPathParamSeparator); err != nil {
 		emitError(err)

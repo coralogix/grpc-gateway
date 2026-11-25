@@ -202,6 +202,10 @@ type Registry struct {
 
 	// generateXGoType is a global generator option for generating x-go-type annotations
 	generateXGoType bool
+
+	// jsonSchemaRoot is the directory that proto import paths resolve from. It locates
+	// the schema files named by the json_field option.
+	jsonSchemaRoot string
 }
 
 type repeatedFieldSeparator struct {
@@ -1059,4 +1063,14 @@ func (r *Registry) SetGenerateXGoType(generateXGoType bool) {
 
 func (r *Registry) GetGenerateXGoType() bool {
 	return r.generateXGoType
+}
+
+// SetJSONSchemaRoot sets the directory json_field schema paths are resolved against.
+func (r *Registry) SetJSONSchemaRoot(root string) {
+	r.jsonSchemaRoot = root
+}
+
+// GetJSONSchemaRoot returns the directory json_field schema paths are resolved against.
+func (r *Registry) GetJSONSchemaRoot() string {
+	return r.jsonSchemaRoot
 }
